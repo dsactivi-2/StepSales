@@ -90,11 +90,12 @@ class ColoredFormatter(logging.Formatter):
 
     def format_exception(self, record: logging.LogRecord) -> str:
         """Format exception with traceback"""
+        if not record.exc_info:
+            return ""
         exc_type, exc_value, exc_tb = record.exc_info
         return (
             f"{self.COLORS['ERROR']}"
-            f"EXCEPTION: {exc_type.__name__}: {exc_value}\n"
-            f"{self.formatException(record)}"
+            f"EXCEPTION: {exc_type.__name__}: {exc_value}"
             f"{self.RESET}"
         )
 

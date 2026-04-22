@@ -8,18 +8,19 @@ import asyncio
 import json
 import logging
 import uuid
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from config import Config
 from stepstone_integration import StepstoneIntegration
 from tools import qualification, demo_booking, follow_up, crm, Lead
-
-logger = logging.getLogger("stepsales.agent")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+from logger_config import (
+    logger_agent, get_logger,
+    log_step, log_command, log_performance, log_error_detailed
 )
+
+logger = logger_agent
 
 
 class TelesalesAgent:
@@ -77,24 +78,54 @@ Heute ist: {current_date}
 
     def __init__(self):
         """Initialize telesales agent"""
-        Config.validate()
+        start = time.time()
+        try:
+            log_step(logger, "Initialize TelesalesAgent", {"version": "1.0.0"})
 
-        self.call_id = str(uuid.uuid4())[:8]
-        self.start_time = datetime.now()
+            # Validate configuration
+            Config.validate()
+            log_command(logger, "config_validate", {"status": "success"})
 
-        # Stepstone integration
-        self.stepstone = StepstoneIntegration(
-            zip_code=Config.stepstone.default_zip_code,
-            radius=Config.stepstone.default_radius,
-        )
+            self.call_id = str(uuid.uuid4())[:8]
+            self.start_time = datetime.now()
 
-        # Call state
-        self.conversation_history: List[Dict] = []
-        self.contact_info: Dict = {}
-        self.job_interests: List[str] = []
-        self.current_qualification_score = 0
+            # Stepstone integration
+            try:
+                self.stepstone = StepstoneIntegration(
+                    zip_code=Config.stepstone.default_zip_code,
+                    radius=Config.stepstone.default_radius,
+                )
+                log_command(
+                    logger,
+                    "stepstone_init",
+                    {
+                        "zip_code": Config.stepstone.default_zip_code,
+                        "radius": Config.stepstone.default_radius,
+                    },
+                )
+            except Exception as e:
+                log_error_detailed(logger, e, {"operation": "stepstone_init"})
+                raise
 
-        logger.info(f"Telesales agent initialized (Call ID: {self.call_id})")
+            # Call state
+            self.conversation_history: List[Dict] = []
+            self.contact_info: Dict = {}
+            self.job_interests: List[str] = []
+            self.current_qualification_score = 0
+
+            duration = (time.time() - start) * 1000
+            log_step(
+                logger,
+                "TelesalesAgent Initialized",
+                {
+                    "call_id": self.call_id,
+                    "duration_ms": round(duration, 2),
+                },
+            )
+
+        except Exception as e:
+            log_error_detailed(logger, e, {"operation": "__init__"})
+            raise
 
     def get_system_prompt(self) -> str:
         """Get formatted system prompt"""
@@ -194,93 +225,301 @@ Heute ist: {current_date}
 
     def handle_tool_call(self, tool_name: str, arguments: Dict) -> Dict:
         """Handle tool calls from agent"""
-        logger.info(f"Tool called: {tool_name} with args: {arguments}")
+        start = time.time()
+        try:
+            log_command(
+                logger,
+                f"tool_call:{tool_name}",
+                {
+                    "call_id": self.call_id,
+                    "args": str(arguments)[:100],  # Limit preview
+                },
+            )
 
-        if tool_name == "search_jobs":
-            return self._handle_search_jobs(arguments)
-        elif tool_name == "qualify_lead":
-            return self._handle_qualify_lead(arguments)
-        elif tool_name == "schedule_demo":
-            return self._handle_schedule_demo(arguments)
-        elif tool_name == "send_followup":
-            return self._handle_send_followup(arguments)
-        else:
-            return {"error": f"Unknown tool: {tool_name}"}
+            if tool_name == "search_jobs":
+                return self._handle_search_jobs(arguments)
+            elif tool_name == "qualify_lead":
+                return self._handle_qualify_lead(arguments)
+            elif tool_name == "schedule_demo":
+                return self._handle_schedule_demo(arguments)
+            elif tool_name == "send_followup":
+                return self._handle_send_followup(arguments)
+            else:
+                error_msg = f"Unknown tool: {tool_name}"
+                log_error_detailed(
+                    logger,
+                    ValueError(error_msg),
+                    {"call_id": self.call_id, "tool_name": tool_name},
+                )
+                return {"error": error_msg}
+
+        except Exception as e:
+            duration = (time.time() - start) * 1000
+            log_error_detailed(
+                logger,
+                e,
+                {
+                    "tool_name": tool_name,
+                    "call_id": self.call_id,
+                    "duration_ms": round(duration, 2),
+                },
+            )
+            raise
+        finally:
+            duration = (time.time() - start) * 1000
+            log_performance(logger, f"tool_call:{tool_name}", duration)
 
     def _handle_search_jobs(self, args: Dict) -> Dict:
         """Search for jobs on Stepstone"""
-        search_terms = args.get("search_terms", [])
-        if not search_terms:
-            return {"error": "search_terms required"}
+        start = time.time()
+        try:
+            search_terms = args.get("search_terms", [])
+            region = args.get("region", "Frankfurt")
 
-        # Note: In production, would call asyncio.run(self.stepstone.search_jobs(search_terms))
-        # For now, return mock data
-        jobs = [
-            {
-                "title": f"{search_terms[0]} Position",
-                "company": "Beispielunternehmen GmbH",
-                "location": args.get("region", "Frankfurt"),
-                "salary": "60.000 - 80.000 EUR",
-                "url": "https://www.stepstone.de/example",
-            }
-        ]
+            if not search_terms:
+                error_msg = "search_terms required"
+                log_error_detailed(
+                    logger,
+                    ValueError(error_msg),
+                    {"call_id": self.call_id},
+                )
+                return {"error": error_msg}
 
-        self.job_interests.extend(search_terms)
-        return {"success": True, "jobs_found": len(jobs), "jobs": jobs}
+            log_step(
+                logger,
+                "Search Jobs Initiated",
+                {
+                    "call_id": self.call_id,
+                    "search_terms": search_terms,
+                    "region": region,
+                },
+            )
+
+            # Note: In production, would call asyncio.run(self.stepstone.search_jobs(search_terms))
+            # For now, return mock data
+            jobs = [
+                {
+                    "title": f"{search_terms[0]} Position",
+                    "company": "Beispielunternehmen GmbH",
+                    "location": region,
+                    "salary": "60.000 - 80.000 EUR",
+                    "url": "https://www.stepstone.de/example",
+                }
+            ]
+
+            self.job_interests.extend(search_terms)
+
+            log_step(
+                logger,
+                "Jobs Search Completed",
+                {
+                    "call_id": self.call_id,
+                    "jobs_found": len(jobs),
+                    "terms": search_terms,
+                },
+            )
+
+            return {"success": True, "jobs_found": len(jobs), "jobs": jobs}
+
+        except Exception as e:
+            log_error_detailed(
+                logger, e, {"call_id": self.call_id, "operation": "_handle_search_jobs"}
+            )
+            raise
 
     def _handle_qualify_lead(self, args: Dict) -> Dict:
         """Qualify and save lead"""
-        self.contact_info = {
-            "company": args.get("company_name"),
-            "contact": args.get("contact_name"),
-            "email": args.get("contact_email"),
-            "phone": args.get("contact_phone"),
-        }
+        start = time.time()
+        try:
+            log_step(
+                logger,
+                "Qualify Lead Started",
+                {
+                    "call_id": self.call_id,
+                    "company": args.get("company_name", "N/A")[:30],
+                    "contact": args.get("contact_name", "N/A")[:30],
+                },
+            )
 
-        lead = Lead(
-            company_name=args.get("company_name", ""),
-            contact_name=args.get("contact_name", ""),
-            contact_email=args.get("contact_email", ""),
-            contact_phone=args.get("contact_phone", ""),
-            job_interests=args.get("job_interests", self.job_interests),
-            budget_range=args.get("budget_range"),
-            timeline=args.get("timeline"),
-            call_id=self.call_id,
-        )
+            self.contact_info = {
+                "company": args.get("company_name"),
+                "contact": args.get("contact_name"),
+                "email": args.get("contact_email"),
+                "phone": args.get("contact_phone"),
+            }
 
-        lead.calculate_score()
-        result = crm.save_lead(lead)
-        self.current_qualification_score = lead.qualification_score
+            lead = Lead(
+                company_name=args.get("company_name", ""),
+                contact_name=args.get("contact_name", ""),
+                contact_email=args.get("contact_email", ""),
+                contact_phone=args.get("contact_phone", ""),
+                job_interests=args.get("job_interests", self.job_interests),
+                budget_range=args.get("budget_range"),
+                timeline=args.get("timeline"),
+                call_id=self.call_id,
+            )
 
-        return result
+            # Calculate qualification score
+            lead.calculate_score()
+            self.current_qualification_score = lead.qualification_score
+
+            log_step(
+                logger,
+                "Lead Score Calculated",
+                {
+                    "call_id": self.call_id,
+                    "score": lead.qualification_score,
+                    "budget": lead.budget_range,
+                    "timeline": lead.timeline,
+                },
+            )
+
+            # Save to CRM
+            result = crm.save_lead(lead)
+
+            duration = (time.time() - start) * 1000
+            log_step(
+                logger,
+                "Lead Qualification Completed",
+                {
+                    "call_id": self.call_id,
+                    "score": self.current_qualification_score,
+                    "duration_ms": round(duration, 2),
+                    "crm_result": str(result)[:100],
+                },
+            )
+
+            return result
+
+        except Exception as e:
+            log_error_detailed(
+                logger,
+                e,
+                {
+                    "call_id": self.call_id,
+                    "operation": "_handle_qualify_lead",
+                    "company": args.get("company_name", "N/A"),
+                },
+            )
+            raise
 
     def _handle_schedule_demo(self, args: Dict) -> Dict:
         """Schedule demo"""
-        slots = demo_booking.check_availability()
-        time_to_book = args.get("preferred_date", "") + " " + args.get("preferred_time", "")
+        start = time.time()
+        try:
+            email = args.get("email", "")
+            preferred_date = args.get("preferred_date", "")
+            preferred_time = args.get("preferred_time", "")
 
-        if time_to_book.strip() != " ":
-            return demo_booking.book_slot(args.get("email"), time_to_book)
-        else:
-            return {
-                "success": True,
-                "message": f"Verfügbare Slots: {', '.join(slots[:3])}",
-                "available_slots": slots,
-            }
+            log_step(
+                logger,
+                "Schedule Demo Initiated",
+                {
+                    "call_id": self.call_id,
+                    "email": email[:20] if email else "N/A",
+                    "date": preferred_date,
+                    "time": preferred_time,
+                },
+            )
+
+            slots = demo_booking.check_availability()
+            time_to_book = preferred_date + " " + preferred_time
+
+            if time_to_book.strip() != " ":
+                result = demo_booking.book_slot(email, time_to_book)
+                log_step(
+                    logger,
+                    "Demo Slot Booked",
+                    {
+                        "call_id": self.call_id,
+                        "email": email[:20],
+                        "slot": time_to_book,
+                    },
+                )
+                return result
+            else:
+                result = {
+                    "success": True,
+                    "message": f"Verfügbare Slots: {', '.join(slots[:3])}",
+                    "available_slots": slots,
+                }
+                log_command(
+                    logger,
+                    "demo_slots_available",
+                    {
+                        "call_id": self.call_id,
+                        "slot_count": len(slots),
+                    },
+                )
+                return result
+
+        except Exception as e:
+            log_error_detailed(
+                logger,
+                e,
+                {
+                    "call_id": self.call_id,
+                    "operation": "_handle_schedule_demo",
+                },
+            )
+            raise
 
     def _handle_send_followup(self, args: Dict) -> Dict:
         """Send follow-up material"""
-        email = args.get("email", "")
-        material = args.get("material_type", "case_study")
+        start = time.time()
+        try:
+            email = args.get("email", "")
+            material = args.get("material_type", "case_study")
 
-        if material == "case_study":
-            return follow_up.send_case_study(email)
-        elif material == "pricing":
-            return follow_up.send_pricing_guide(email)
-        elif material == "product_brief":
-            return follow_up.send_product_brief(email)
-        else:
-            return {"error": f"Unknown material type: {material}"}
+            log_step(
+                logger,
+                "Send Followup Material",
+                {
+                    "call_id": self.call_id,
+                    "email": email[:20] if email else "N/A",
+                    "material_type": material,
+                },
+            )
+
+            result = None
+            if material == "case_study":
+                result = follow_up.send_case_study(email)
+            elif material == "pricing":
+                result = follow_up.send_pricing_guide(email)
+            elif material == "product_brief":
+                result = follow_up.send_product_brief(email)
+            else:
+                error_msg = f"Unknown material type: {material}"
+                log_error_detailed(
+                    logger,
+                    ValueError(error_msg),
+                    {"call_id": self.call_id, "material": material},
+                )
+                return {"error": error_msg}
+
+            duration = (time.time() - start) * 1000
+            log_step(
+                logger,
+                "Followup Material Sent",
+                {
+                    "call_id": self.call_id,
+                    "material": material,
+                    "duration_ms": round(duration, 2),
+                },
+            )
+
+            return result
+
+        except Exception as e:
+            log_error_detailed(
+                logger,
+                e,
+                {
+                    "call_id": self.call_id,
+                    "operation": "_handle_send_followup",
+                },
+            )
+            raise
 
     def get_call_summary(self) -> Dict:
         """Get call summary for logging"""
@@ -297,31 +536,72 @@ Heute ist: {current_date}
 
 async def main():
     """Main function for testing agent"""
-    agent = TelesalesAgent()
+    print("=" * 60)
+    print("🤖 Telesales Agent Test Suite (with Logging)")
+    print("=" * 60)
 
-    print(f"✅ Telesales Agent initialized (Call ID: {agent.call_id})")
-    print(f"📋 System Instructions:\n{agent.get_system_prompt()}\n")
-    print(f"🛠️  Available Tools: {len(agent.build_tool_definitions())}")
+    try:
+        agent = TelesalesAgent()
 
-    # Simulate tool calls
-    print("\n--- Testing Tool Calls ---")
+        print(f"✅ Telesales Agent initialized (Call ID: {agent.call_id})")
+        print(f"🛠️  Available Tools: {len(agent.build_tool_definitions())}")
 
-    result = agent.handle_tool_call("search_jobs", {"search_terms": ["Software Engineer"]})
-    print(f"search_jobs result: {result}")
+        # Simulate tool calls
+        print("\n--- Testing Tool Calls ---")
 
-    result = agent.handle_tool_call(
-        "qualify_lead",
-        {
-            "company_name": "TechCorp GmbH",
-            "contact_name": "Max Müller",
-            "contact_email": "max@techcorp.de",
-            "job_interests": ["Software Engineer"],
-            "timeline": "In 2 Wochen",
-        },
-    )
-    print(f"qualify_lead result: {result}")
+        # Test 1: Search jobs
+        print("\n[1] Testing search_jobs...")
+        result = agent.handle_tool_call("search_jobs", {"search_terms": ["Software Engineer"]})
+        print(f"    Result: {json.dumps(result, indent=2)[:100]}...")
 
-    print(f"\n📊 Call Summary: {json.dumps(agent.get_call_summary(), indent=2)}")
+        # Test 2: Qualify lead
+        print("\n[2] Testing qualify_lead...")
+        result = agent.handle_tool_call(
+            "qualify_lead",
+            {
+                "company_name": "TechCorp GmbH",
+                "contact_name": "Max Müller",
+                "contact_email": "max@techcorp.de",
+                "job_interests": ["Software Engineer"],
+                "timeline": "In 2 Wochen",
+                "budget_range": "50000-80000 EUR",
+            },
+        )
+        print(f"    Qualification Score: {agent.current_qualification_score}")
+        print(f"    Result: {json.dumps(result, indent=2)[:100]}...")
+
+        # Test 3: Schedule demo
+        print("\n[3] Testing schedule_demo...")
+        result = agent.handle_tool_call(
+            "schedule_demo",
+            {
+                "email": "max@techcorp.de",
+                "preferred_date": "2026-04-25",
+                "preferred_time": "14:00",
+            },
+        )
+        print(f"    Result: {json.dumps(result, indent=2)[:100]}...")
+
+        # Test 4: Send followup
+        print("\n[4] Testing send_followup...")
+        result = agent.handle_tool_call(
+            "send_followup",
+            {
+                "email": "max@techcorp.de",
+                "material_type": "case_study",
+            },
+        )
+        print(f"    Result: {json.dumps(result, indent=2)[:100]}...")
+
+        print(f"\n📊 Call Summary:")
+        print(json.dumps(agent.get_call_summary(), indent=2))
+
+        print("\n✅ All tests completed successfully!")
+        print("📂 Check logs/ directory for detailed logging")
+
+    except Exception as e:
+        print(f"\n❌ Test failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
