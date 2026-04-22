@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stepsales — Live Voice Call</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            margin: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .call-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .call-info.active {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .call-status {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ccc;
+            margin-right: 8px;
+            animation: none;
+        }
+
+        .status-indicator.active {
+            background: #4caf50;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .transcript {
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            padding: 15px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .transcript-message {
+            margin-bottom: 12px;
+            padding: 10px;
+            border-radius: 6px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .transcript-message.agent {
+            background: #e3f2fd;
+            border-left: 3px solid #2196f3;
+        }
+
+        .transcript-message.user {
+            background: #f3e5f5;
+            border-left: 3px solid #9c27b0;
+        }
+
+        .transcript-message.system {
+            background: #fff3e0;
+            border-left: 3px solid #ff9800;
+            font-size: 12px;
+        }
+
+        .message-label {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+            opacity: 0.7;
+        }
+
+        .agent .message-label { color: #1565c0; }
+        .user .message-label { color: #6a1b9a; }
+        .system .message-label { color: #e65100; }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            grid-column: 1 / -1;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+            border: 1px solid #e0e0e0;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #e8e8e8;
+            border-color: #d0d0d0;
+        }
+
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #d32f2f;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(244, 67, 54, 0.3);
+        }
+
+        .btn-success {
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-success:hover:not(:disabled) {
+            background: #388e3c;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3);
+        }
+
+        .mic-level {
+            margin-bottom: 15px;
+        }
+
+        .mic-level-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 6px;
+            color: #666;
+        }
+
+        .mic-level-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .mic-level-indicator {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #ffc107, #f44336);
+            width: 0%;
+            transition: width 0.1s ease-out;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #667eea;
+            margin: 5px 0;
+        }
+
+        .stat-label {
+            color: #666;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .error.visible {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #999;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📞 Stepsales</h1>
+            <p>Live Voice Call mit Alex</p>
+        </div>
+
+        <div id="error" class="error"></div>
+
+        <div class="call-info" id="callInfo">
+            <div><strong>Status:</strong> <span id="status">Bereit</span></div>
+            <div id="callDuration" style="display: none;"><strong>Dauer:</strong> <span id="duration">00:00</span></div>
+            <div id="callId" style="display: none;"><strong>Call ID:</strong> <span id="id">-</span></div>
+        </div>
+
+        <div class="call-status">
+            <span class="status-indicator" id="statusIndicator"></span>
+            <span id="statusText">Offline</span>
+        </div>
+
+        <div id="transcript" class="transcript">
+            <div class="loading">
+                <p>Warten auf Verbindung...</p>
+            </div>
+        </div>
+
+        <div class="mic-level">
+            <div class="mic-level-label">
+                <span>Mikrofon Level</span>
+                <span id="micLevel">0%</span>
+            </div>
+            <div class="mic-level-bar">
+                <div class="mic-level-indicator" id="micIndicator"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn-primary" id="startBtn" onclick="startCall()">
+                🎤 Call Starten
+            </button>
+            <button class="btn-danger" id="stopBtn" onclick="endCall()" disabled style="display: none;">
+                ⏹️ Call Beenden
+            </button>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">Nachrichten</div>
+                <div class="stat-value" id="messageCount">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Verbunden</div>
+                <div class="stat-value" id="connected">Nein</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let ws = null;
+        let sessionId = Math.random().toString(36).substr(2, 9);
+        let isConnected = false;
+        let callStartTime = null;
+        let durationInterval = null;
+        let mediaRecorder = null;
+        let audioContext = null;
+        let analyser = null;
+
+        // Add transcript message
+        function addTranscript(speaker, text) {
+            const transcript = document.getElementById('transcript');
+            if (transcript.querySelector('.loading')) {
+                transcript.innerHTML = '';
+            }
+
+            const msg = document.createElement('div');
+            msg.className = `transcript-message ${speaker.toLowerCase()}`;
+            msg.innerHTML = `
+                <div class="message-label">${speaker}</div>
+                <div>${escapeHtml(text)}</div>
+            `;
+            transcript.appendChild(msg);
+            transcript.scrollTop = transcript.scrollHeight;
+
+            // Update message count
+            const count = parseInt(document.getElementById('messageCount').textContent) + 1;
+            document.getElementById('messageCount').textContent = count;
+        }
+
+        // Escape HTML for security
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Show error
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = '❌ ' + message;
+            errorEl.classList.add('visible');
+            setTimeout(() => {
+                errorEl.classList.remove('visible');
+            }, 5000);
+        }
+
+        // Update UI
+        function updateStatus(status, connected = null) {
+            document.getElementById('status').textContent = status;
+
+            if (connected !== null) {
+                isConnected = connected;
+                const indicator = document.getElementById('statusIndicator');
+                const text = document.getElementById('statusText');
+
+                if (connected) {
+                    indicator.classList.add('active');
+                    text.textContent = 'Online';
+                    document.getElementById('connected').textContent = 'Ja';
+                    document.getElementById('callInfo').classList.add('active');
+                    document.getElementById('callDuration').style.display = 'block';
+                    document.getElementById('callId').style.display = 'block';
+                } else {
+                    indicator.classList.remove('active');
+                    text.textContent = 'Offline';
+                    document.getElementById('connected').textContent = 'Nein';
+                    document.getElementById('callInfo').classList.remove('active');
+                    document.getElementById('callDuration').style.display = 'none';
+                    document.getElementById('callId').style.display = 'none';
+                }
+            }
+        }
+
+        // Start call
+        async function startCall() {
+            try {
+                // Request microphone access
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+
+                // Setup audio analysis
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+
+                // Setup media recorder
+                mediaRecorder = new MediaRecorder(stream);
+
+                // Start recording chunks
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0 && isConnected) {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            const base64Audio = event.target.result.split(',')[1];
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'user_audio',
+                                    audio: base64Audio,
+                                    transcript: 'User audio input'
+                                }));
+                            }
+                        };
+                        reader.readAsDataURL(new Blob([e.data], { type: 'audio/webm' }));
+                    }
+                };
+
+                mediaRecorder.start(1000); // Send chunks every second
+
+                // Start monitoring mic level
+                monitorMicLevel();
+
+                // Connect WebSocket
+                connectWebSocket();
+
+                // Update UI
+                document.getElementById('startBtn').style.display = 'none';
+                document.getElementById('stopBtn').style.display = 'block';
+                updateStatus('Verbindung wird aufgebaut...', false);
+
+                // Start duration timer
+                callStartTime = Date.now();
+                durationInterval = setInterval(updateDuration, 1000);
+
+            } catch (error) {
+                showError('Mikrofonzugriff verweigert: ' + error.message);
+                updateStatus('Fehler', false);
+            }
+        }
+
+        // Connect WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/call/${sessionId}`);
+
+            ws.onopen = () => {
+                updateStatus('Verbunden', true);
+                addTranscript('System', '📞 Call gestartet. Agent wartet auf Ihre Nachricht...');
+                console.log('WebSocket connected');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'agent_message') {
+                        addTranscript('Agent', data.text);
+                        // In production, play TTS audio
+                    } else if (data.type === 'call_ended') {
+                        updateStatus('Call beendet', false);
+                        addTranscript('System', '✅ Call beendet');
+                    } else if (data.type === 'error') {
+                        showError(data.message);
+                    }
+                } catch (error) {
+                    console.error('Message parse error:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                showError('WebSocket-Fehler');
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                updateStatus('Verbindung beendet', false);
+                console.log('WebSocket closed');
+            };
+        }
+
+        // Monitor mic level
+        function monitorMicLevel() {
+            if (!analyser) return;
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function update() {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const percentage = Math.min(100, (average / 255) * 150);
+
+                document.getElementById('micIndicator').style.width = percentage + '%';
+                document.getElementById('micLevel').textContent = Math.round(percentage) + '%';
+
+                if (isConnected) {
+                    requestAnimationFrame(update);
+                }
+            }
+
+            update();
+        }
+
+        // Update duration
+        function updateDuration() {
+            if (!callStartTime) return;
+            const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            document.getElementById('duration').textContent =
+                `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        // End call
+        function endCall() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'end_call' }));
+                ws.close();
+            }
+
+            clearInterval(durationInterval);
+            updateStatus('Call beendet', false);
+            addTranscript('System', '👋 Call beendet');
+
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('stopBtn').style.display = 'none';
+        }
+
+        // Initialize
+        updateStatus('Bereit', false);
+        document.getElementById('id').textContent = sessionId;
+    </script>
+</body>
+</html>

@@ -9,15 +9,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create data directory
-RUN mkdir -p data/transcripts
+# Create data directories
+RUN mkdir -p data/transcripts static
 
-# Expose port for API (if needed)
+# Expose port for web server
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "from telesales_agent import TelesalesAgent; TelesalesAgent()" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
 
-# Run agent
-CMD ["python", "telesales_agent.py"]
+# Run web server (for live voice calls)
+# Override with: docker run -e MODE=agent [image] python telesales_agent.py
+CMD ["python", "web_server.py"]
