@@ -9,6 +9,8 @@ import json
 import logging
 import base64
 import os
+import time
+import uuid
 from typing import Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -20,10 +22,13 @@ import uvicorn
 
 from config import Config
 from telesales_agent import TelesalesAgent
+from logger_config import (
+    logger_web, logger_websocket, get_logger,
+    log_step, log_command, log_performance, log_error_detailed
+)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("stepsales.web")
+# Use advanced logger
+logger = logger_web
 
 
 @asynccontextmanager
@@ -91,36 +96,87 @@ active_sessions: dict[str, CallSession] = {}
 @app.get("/")
 async def get_index():
     """Serve main HTML page"""
-    return FileResponse("static/index.html", media_type="text/html")
+    start = time.time()
+    try:
+        log_step(logger, "GET /", {"type": "index_page"})
+        result = FileResponse("static/index.html", media_type="text/html")
+        duration = (time.time() - start) * 1000
+        log_performance(logger, "GET /", duration)
+        return result
+    except Exception as e:
+        log_error_detailed(logger, e, {"endpoint": "GET /"})
+        return {"error": str(e)}, 500
 
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "stepsales-web-call",
-        "active_calls": len(active_sessions),
-    }
+    start = time.time()
+    try:
+        result = {
+            "status": "healthy",
+            "service": "stepsales-web-call",
+            "active_calls": len(active_sessions),
+            "timestamp": datetime.now().isoformat(),
+        }
+        log_command(logger, "health_check", result)
+        duration = (time.time() - start) * 1000
+        log_performance(logger, "GET /health", duration)
+        return result
+    except Exception as e:
+        log_error_detailed(logger, e, {"endpoint": "GET /health"})
+        return {"status": "unhealthy", "error": str(e)}, 500
 
 
 @app.websocket("/ws/call/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for voice calls"""
-    await websocket.accept()
-    logger.info(f"WebSocket connected: {session_id}")
-
-    # Create or get session
-    if session_id not in active_sessions:
-        active_sessions[session_id] = CallSession(session_id)
-
-    session = active_sessions[session_id]
-    session.connected = True
+    request_id = str(uuid.uuid4())[:8]
+    ws_start = time.time()
+    message_count = 0
 
     try:
+        await websocket.accept()
+        log_step(
+            logger_websocket,
+            "WebSocket Connected",
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "client": str(websocket.client),
+            },
+        )
+
+        # Create or get session
+        if session_id not in active_sessions:
+            active_sessions[session_id] = CallSession(session_id)
+            log_command(
+                logger_websocket,
+                "create_session",
+                {"session_id": session_id, "request_id": request_id},
+            )
+        else:
+            log_command(logger_websocket, "reuse_session", {"session_id": session_id})
+
+        session = active_sessions[session_id]
+        session.connected = True
+
         # Send initial greeting from agent
-        initial_message = "Guten Tag, hier ist Alex von Stepsales. Wie kann ich Ihnen heute helfen?"
+        initial_message = (
+            "Guten Tag, hier ist Alex von Stepsales. "
+            "Wie kann ich Ihnen heute helfen?"
+        )
         session.add_transcript("Agent", initial_message)
+
+        log_step(
+            logger_websocket,
+            "Agent Greeting Sent",
+            {
+                "session_id": session_id,
+                "call_id": session.agent.call_id,
+                "message_length": len(initial_message),
+            },
+        )
 
         await websocket.send_json(
             {
@@ -132,51 +188,149 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
         # Listen for incoming messages
         while True:
+            msg_start = time.time()
             data = await websocket.receive_json()
+            message_count += 1
 
-            if data["type"] == "user_audio":
-                # Incoming audio from user
-                audio_base64 = data.get("audio", "")
-                if audio_base64:
-                    # Decode audio
-                    audio_bytes = base64.b64decode(audio_base64)
-
-                    # In production, send to OpenAI Realtime API
-                    # For now, echo back with simulated response
+            try:
+                if data["type"] == "user_audio":
+                    # Incoming audio from user
+                    audio_base64 = data.get("audio", "")
                     user_text = data.get("transcript", "")
-                    if user_text:
-                        session.add_transcript("User", user_text)
 
-                        # Simulate agent response
-                        agent_response = await generate_agent_response(
-                            session, user_text
-                        )
+                    if audio_base64:
+                        audio_bytes = base64.b64decode(audio_base64)
+                        audio_size_kb = len(audio_bytes) / 1024
 
-                        session.add_transcript("Agent", agent_response)
-
-                        await websocket.send_json(
+                        log_step(
+                            logger_websocket,
+                            "Audio Received",
                             {
-                                "type": "agent_message",
-                                "text": agent_response,
-                            }
+                                "session_id": session_id,
+                                "size_kb": round(audio_size_kb, 2),
+                                "text_preview": user_text[:40] if user_text else "N/A",
+                                "message_num": message_count,
+                            },
                         )
 
-            elif data["type"] == "end_call":
-                logger.info(f"Call ended by user: {session_id}")
-                summary = session.get_call_summary()
-                await websocket.send_json({"type": "call_ended", "summary": summary})
-                break
+                        if user_text:
+                            session.add_transcript("User", user_text)
+
+                            log_command(
+                                logger_websocket,
+                                "user_message",
+                                {
+                                    "session_id": session_id,
+                                    "text_length": len(user_text),
+                                    "message_num": message_count,
+                                },
+                            )
+
+                            # Get agent response
+                            agent_start = time.time()
+                            agent_response = await generate_agent_response(
+                                session, user_text
+                            )
+                            agent_duration = (time.time() - agent_start) * 1000
+
+                            session.add_transcript("Agent", agent_response)
+
+                            log_step(
+                                logger_websocket,
+                                "Agent Response Generated",
+                                {
+                                    "session_id": session_id,
+                                    "duration_ms": round(agent_duration, 2),
+                                    "response_length": len(agent_response),
+                                },
+                            )
+
+                            await websocket.send_json(
+                                {
+                                    "type": "agent_message",
+                                    "text": agent_response,
+                                }
+                            )
+
+                            msg_duration = (time.time() - msg_start) * 1000
+                            log_performance(
+                                logger_websocket,
+                                f"user_message_complete",
+                                msg_duration,
+                            )
+
+                elif data["type"] == "end_call":
+                    call_duration = (time.time() - ws_start) * 1000
+                    summary = session.get_call_summary()
+
+                    log_step(
+                        logger_websocket,
+                        "Call Ended by User",
+                        {
+                            "session_id": session_id,
+                            "duration_ms": round(call_duration, 2),
+                            "message_count": message_count,
+                            "transcript_lines": len(session.transcript),
+                        },
+                    )
+
+                    await websocket.send_json(
+                        {"type": "call_ended", "summary": summary}
+                    )
+                    break
+            except json.JSONDecodeError as je:
+                log_error_detailed(
+                    logger_websocket,
+                    je,
+                    {
+                        "session_id": session_id,
+                        "message_num": message_count,
+                        "data": str(data)[:100],
+                    },
+                )
+                await websocket.send_json(
+                    {"type": "error", "message": "Invalid JSON in message"}
+                )
+            except Exception as e:
+                log_error_detailed(
+                    logger_websocket,
+                    e,
+                    {
+                        "session_id": session_id,
+                        "message_num": message_count,
+                    },
+                )
+                await websocket.send_json({"type": "error", "message": str(e)})
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected: {session_id}")
+        call_duration = (time.time() - ws_start) * 1000
+        log_step(
+            logger_websocket,
+            "WebSocket Disconnected",
+            {
+                "session_id": session_id,
+                "duration_ms": round(call_duration, 2),
+                "message_count": message_count,
+            },
+        )
         session.connected = False
         if session_id in active_sessions:
             del active_sessions[session_id]
+
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        call_duration = (time.time() - ws_start) * 1000
+        log_error_detailed(
+            logger_websocket,
+            e,
+            {
+                "session_id": session_id,
+                "duration_ms": round(call_duration, 2),
+                "message_count": message_count,
+            },
+        )
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
-        except:
+        except Exception:
             pass
 
 
@@ -215,48 +369,137 @@ async def generate_agent_response(session: CallSession, user_input: str) -> str:
 @app.post("/api/calls/{session_id}/end")
 async def end_call(session_id: str):
     """Manually end a call"""
-    if session_id in active_sessions:
-        session = active_sessions[session_id]
-        summary = session.get_call_summary()
-        del active_sessions[session_id]
-        return {"status": "ended", "summary": summary}
-    return {"status": "not_found", "error": f"Session {session_id} not found"}
+    start = time.time()
+    try:
+        log_command(logger, "end_call", {"session_id": session_id})
+
+        if session_id in active_sessions:
+            session = active_sessions[session_id]
+            summary = session.get_call_summary()
+
+            log_step(
+                logger,
+                "Call Ended",
+                {
+                    "session_id": session_id,
+                    "duration_sec": summary.get("duration_seconds"),
+                    "message_count": summary.get("transcript_lines"),
+                },
+            )
+
+            del active_sessions[session_id]
+
+            duration = (time.time() - start) * 1000
+            log_performance(logger, "POST /api/calls/{id}/end", duration)
+
+            return {"status": "ended", "summary": summary}
+
+        log_error_detailed(
+            logger, ValueError(f"Session not found: {session_id}"), {"session_id": session_id}
+        )
+        return {"status": "not_found", "error": f"Session {session_id} not found"}
+
+    except Exception as e:
+        log_error_detailed(logger, e, {"session_id": session_id, "endpoint": "end_call"})
+        return {"status": "error", "error": str(e)}, 500
 
 
 @app.get("/api/calls/{session_id}/transcript")
 async def get_transcript(session_id: str):
     """Get call transcript"""
-    if session_id in active_sessions:
-        session = active_sessions[session_id]
-        return {
-            "session_id": session_id,
-            "transcript": session.transcript,
-            "summary": session.get_call_summary(),
-        }
-    return {"error": "Session not found"}
+    start = time.time()
+    try:
+        log_command(logger, "get_transcript", {"session_id": session_id})
+
+        if session_id in active_sessions:
+            session = active_sessions[session_id]
+            summary = session.get_call_summary()
+
+            result = {
+                "session_id": session_id,
+                "transcript": session.transcript,
+                "summary": summary,
+            }
+
+            log_step(
+                logger,
+                "Transcript Retrieved",
+                {
+                    "session_id": session_id,
+                    "lines": len(session.transcript),
+                    "duration_sec": summary.get("duration_seconds"),
+                },
+            )
+
+            duration = (time.time() - start) * 1000
+            log_performance(logger, "GET /api/calls/{id}/transcript", duration)
+
+            return result
+
+        log_error_detailed(
+            logger, ValueError(f"Session not found: {session_id}"), {"session_id": session_id}
+        )
+        return {"error": "Session not found"}
+
+    except Exception as e:
+        log_error_detailed(logger, e, {"session_id": session_id, "endpoint": "get_transcript"})
+        return {"status": "error", "error": str(e)}, 500
 
 
 def main():
     """Run web server"""
-    Config.validate()
+    start = time.time()
 
-    # Get port from environment or use default
-    port = int(os.getenv("PORT", "8001"))
-    host = os.getenv("HOST", "0.0.0.0")
+    try:
+        log_step(logger, "Initialize Web Server", {"version": "1.0.0"})
 
-    logger.info("=" * 60)
-    logger.info("📞 Stepsales Web Call Server")
-    logger.info("=" * 60)
-    logger.info(f"🌐 Local: http://localhost:{port}")
-    logger.info(f"📊 Health: http://localhost:{port}/health")
-    logger.info("=" * 60)
+        # Validate configuration
+        try:
+            Config.validate()
+            log_command(logger, "config_validate", {"status": "success"})
+        except Exception as e:
+            log_error_detailed(logger, e, {"operation": "config_validate"})
+            raise
 
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level="info",
-    )
+        # Get port from environment or use default
+        port = int(os.getenv("PORT", "8001"))
+        host = os.getenv("HOST", "0.0.0.0")
+
+        log_step(
+            logger,
+            "Server Configuration Loaded",
+            {
+                "host": host,
+                "port": port,
+                "log_dir": str(logger_web.handlers[1].baseFilename),
+            },
+        )
+
+        logger.info("=" * 60)
+        logger.info("📞 Stepsales Web Call Server")
+        logger.info("=" * 60)
+        logger.info(f"🌐 Local: http://localhost:{port}")
+        logger.info(f"📊 Health: http://localhost:{port}/health")
+        logger.info(f"📂 Logs: logs/")
+        logger.info("=" * 60)
+
+        log_step(logger, "Starting Uvicorn Server", {"port": port, "host": host})
+
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+        )
+
+    except KeyboardInterrupt:
+        duration = (time.time() - start) * 1000
+        log_step(
+            logger, "Server Shutdown (User)", {"duration_ms": round(duration, 2)}
+        )
+    except Exception as e:
+        log_error_detailed(logger, e, {"operation": "main"})
+        raise
 
 
 if __name__ == "__main__":
