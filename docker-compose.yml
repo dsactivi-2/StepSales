@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  stepsales-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stepsales-agent
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=gpt-realtime-1.5
+      - VOICE=shimmer
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Stepstone MCP Server
+  stepstone-mcp:
+    image: python:3.11-slim
+    container_name: stepstone-mcp
+    working_dir: /workspace
+    volumes:
+      - ../mcp-stepstone:/workspace
+    environment:
+      - LOG_LEVEL=INFO
+    command: python stepstone_server.py
+    restart: unless-stopped
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
