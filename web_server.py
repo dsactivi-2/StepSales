@@ -8,8 +8,10 @@ import asyncio
 import json
 import logging
 import base64
+import os
 from typing import Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -23,8 +25,21 @@ from telesales_agent import TelesalesAgent
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("stepsales.web")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown events"""
+    logger.info("🚀 Stepsales Web Call Server starting...")
+    yield
+    logger.info("🛑 Stepsales Web Call Server shutting down...")
+
+
 # Initialize FastAPI
-app = FastAPI(title="Stepsales Web Call", version="1.0.0")
+app = FastAPI(
+    title="Stepsales Web Call",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # CORS middleware for local development
 app.add_middleware(
@@ -221,31 +236,25 @@ async def get_transcript(session_id: str):
     return {"error": "Session not found"}
 
 
-async def lifespan(app: FastAPI):
-    """Startup/shutdown events"""
-    logger.info("🚀 Stepsales Web Call Server starting...")
-    yield
-    logger.info("🛑 Stepsales Web Call Server shutting down...")
-
-
-app.router.lifespan_context = lifespan
-
-
 def main():
     """Run web server"""
     Config.validate()
 
+    # Get port from environment or use default
+    port = int(os.getenv("PORT", "8001"))
+    host = os.getenv("HOST", "0.0.0.0")
+
     logger.info("=" * 60)
     logger.info("📞 Stepsales Web Call Server")
     logger.info("=" * 60)
-    logger.info("🌐 Local: http://localhost:8000")
-    logger.info("📊 Health: http://localhost:8000/health")
+    logger.info(f"🌐 Local: http://localhost:{port}")
+    logger.info(f"📊 Health: http://localhost:{port}/health")
     logger.info("=" * 60)
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=host,
+        port=port,
         log_level="info",
     )
 

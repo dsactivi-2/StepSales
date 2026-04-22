@@ -152,20 +152,22 @@ pytest tests/ --cov=. --cov-report=html
 
 ## 🔧 Configuration
 
-### Web Server Settings (in `web_server.py`)
+### Web Server Settings
 
-```python
-# Host/Port
-HOST = "0.0.0.0"
-PORT = 8000
+Configure via environment variables (in `.env`):
 
-# Audio settings
-AUDIO_CHUNK_DURATION_MS = 1000  # Send audio every 1 second
-AUDIO_FORMAT = "webm"
+```bash
+# Host/Port (Optional)
+PORT=8001
+HOST=0.0.0.0
 
-# Logging
-LOG_LEVEL = "INFO"
+# Or set via command line
+PORT=8080 python web_server.py
 ```
+
+**Default values:**
+- `PORT=8001` (if port 8000 is in use)
+- `HOST=0.0.0.0` (listen on all interfaces)
 
 ### Browser Requirements
 
