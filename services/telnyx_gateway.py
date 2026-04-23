@@ -103,7 +103,8 @@ class TelnyxGateway:
             resp = await self._client.post("/calls", json=payload)
             resp.raise_for_status()
             call_data = resp.json()["data"]
-            call_id = call_data.get("id", "")
+            # Call Control API returns call_control_id, not id
+            call_id = call_data.get("call_control_id") or call_data.get("id", "")
 
             self._call_registry[call_id] = {
                 "to": to_number,
