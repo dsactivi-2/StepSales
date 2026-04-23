@@ -17,16 +17,24 @@ services:
       - HOST=0.0.0.0
       - PORT=8010
       - LOG_LEVEL=INFO
+      - QDRANT_URL=http://qdrant-stepsales:6333
+      - NEO4J_URI=bolt://neo4j-stepsales:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=stepsales_memory_2026
     volumes:
       - ./data:/app/data
-      - ./config:/app/config
     restart: unless-stopped
+    depends_on:
+      - qdrant-stepsales
+      - neo4j-stepsales
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    networks:
+      - stepsales-net
 
   # Optional: Stepstone MCP Server
   stepstone-mcp:
@@ -40,8 +48,60 @@ services:
     command: python stepstone_server.py
     restart: unless-stopped
     networks:
-      - default
+      - stepsales-net
+
+  # Stepsales Qdrant (Vector Store)
+  qdrant-stepsales:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-stepsales
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-stepsales-data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "curl -f http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - stepsales-net
+
+  # Stepsales Neo4j (Graph Memory)
+  neo4j-stepsales:
+    image: neo4j:5-community
+    container_name: neo4j-stepsales
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/stepsales_memory_2026
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    volumes:
+      - neo4j-stepsales-data:/data
+      - neo4j-stepsales-logs:/logs
+      - neo4j-stepsales-import:/var/lib/neo4j/import
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "stepsales_memory_2026", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - stepsales-net
+
+volumes:
+  qdrant-stepsales-data:
+  neo4j-stepsales-data:
+  neo4j-stepsales-logs:
+  neo4j-stepsales-import:
 
 networks:
-  default:
+  stepsales-net:
     driver: bridge

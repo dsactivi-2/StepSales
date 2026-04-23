@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from config import Config
+from config_legacy import Config
 from telesales_agent import TelesalesAgent
 from logger_config import (
     logger_web, logger_websocket, get_logger,

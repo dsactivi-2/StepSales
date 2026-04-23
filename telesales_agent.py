@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from config import Config
+from config_legacy import Config
 from stepstone_integration import StepstoneIntegration
 from tools import qualification, demo_booking, follow_up, crm, Lead
 from logger_config import (
