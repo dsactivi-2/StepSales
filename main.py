@@ -36,6 +36,7 @@ from services.sla_escalation import SLAEscalationService, SLAPolicy
 from services.analytics import AnalyticsService
 from services.webhooks import WebhookRouter
 from services.audit_monitoring import AuditAndMonitoringService, AuditCategory, AuditLevel
+from services.graph_memory import GraphMemoryService
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -112,6 +113,11 @@ class AuditQueryRequest(BaseModel):
     level: str = ""
     actor: str = ""
     limit: int = 100
+
+class GraphQueryRequest(BaseModel):
+    entity_id: str
+    max_hops: int = 2
+    relationship_type: str = ""
 
 @app.get("/health")
 async def health():
@@ -451,6 +457,37 @@ async def audit_summary():
         raise HTTPException(503, "System not initialized")
     return _system.audit.get_summary()
 
+@app.get("/graph/stats")
+async def graph_stats():
+    if not _system or not _system.graph_memory:
+        raise HTTPException(503, "System not initialized")
+    return await _system.graph_memory.get_stats()
+
+@app.post("/graph/query")
+async def graph_query(req: GraphQueryRequest):
+    if not _system or not _system.graph_memory:
+        raise HTTPException(503, "System not initialized")
+    return await _system.graph_memory.get_customer_graph(req.entity_id, req.max_hops)
+
+@app.get("/graph/memory/{customer_id}")
+async def graph_memory(customer_id: str):
+    if not _system or not _system.graph_memory:
+        raise HTTPException(503, "System not initialized")
+    return await _system.graph_memory.get_customer_memory(customer_id)
+
+@app.get("/graph/calls/{lead_id}")
+async def graph_calls(lead_id: str):
+    if not _system or not _system.graph_memory:
+        raise HTTPException(503, "System not initialized")
+    return await _system.graph_memory.get_call_history(lead_id)
+
+@app.post("/graph/seed-workflows")
+async def graph_seed_workflows():
+    if not _system or not _system.graph_memory:
+        raise HTTPException(503, "System not initialized")
+    await _system.graph_memory.seed_graph_workflows()
+    return {"seeded": True}
+
 @app.post("/audit/log-entry")
 async def audit_log_entry(req: AuditQueryRequest):
     if not _system or not _system.audit:
@@ -501,6 +538,7 @@ class StepsalesSystem:
         self.analytics = None
         self.webhooks = None
         self.audit = None
+        self.graph_memory = None
         self._running = False
 
     async def initialize(self):
@@ -532,6 +570,9 @@ class StepsalesSystem:
         self.webhooks = WebhookRouter(self.config)
         self.audit = AuditAndMonitoringService(self.config)
         await self.audit.initialize()
+        self.graph_memory = GraphMemoryService(self.config)
+        await self.graph_memory.initialize()
+        await self.graph_memory.seed_graph_workflows()
 
         logger.info("All services initialized successfully")
         self._running = True
@@ -610,6 +651,8 @@ class StepsalesSystem:
             await self.knowledgebase.close()
         if self.sla:
             self.sla.stop_monitor()
+        if self.graph_memory:
+            await self.graph_memory.close()
 
         logger.info("All services shut down")
 
