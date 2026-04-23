@@ -15,7 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -33,6 +34,7 @@ from services.knowledgebase import KnowledgebaseService
 from services.agent_coach import AgentCoachService
 from services.sla_escalation import SLAEscalationService, SLAPolicy
 from services.analytics import AnalyticsService
+from services.webhooks import WebhookRouter
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -50,6 +52,7 @@ logger = logging.getLogger("stepsales.main")
 
 app = FastAPI(title="Stepsales API", version="1.0.0")
 _system = None
+_start_time = time.time()
 
 class CallRequest(BaseModel):
     phone: str
@@ -317,6 +320,105 @@ async def record_call(duration: float, stage: str, deal_value: float = 0):
     _system.analytics.record_call(duration, stage, deal_value)
     return {"recorded": True}
 
+@app.post("/webhooks/telnyx")
+async def telnyx_webhook(request: Request):
+    if not _system or not _system.webhooks:
+        raise HTTPException(503, "System not initialized")
+    payload = await request.json()
+    signature = request.headers.get("X-Telnyx-Signature-V2", "")
+    timestamp = request.headers.get("X-Telnyx-Signature-Timestamp", "")
+    result = await _system.webhooks.handle_telnyx_webhook(payload, signature, timestamp)
+    return result
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    if not _system or not _system.webhooks:
+        raise HTTPException(503, "System not initialized")
+    body = await request.body()
+    sig_header = request.headers.get("Stripe-Signature", "")
+    result = await _system.webhooks.handle_stripe_webhook(body, sig_header)
+    return result
+
+@app.get("/webhooks/events")
+async def webhook_events(source: str = "", limit: int = 50):
+    if not _system or not _system.webhooks:
+        raise HTTPException(503, "System not initialized")
+    return _system.webhooks.get_event_log(source or None, limit)
+
+@app.get("/webhooks/stats")
+async def webhook_stats():
+    if not _system or not _system.webhooks:
+        raise HTTPException(503, "System not initialized")
+    return _system.webhooks.get_stats()
+
+@app.get("/metrics")
+async def metrics():
+    if not _system:
+        raise HTTPException(503, "System not initialized")
+
+    import psutil
+    import os
+
+    proc = psutil.Process(os.getpid())
+    mem = proc.memory_info()
+
+    metrics_data = {
+        "service": "stepsales-agent",
+        "version": "1.0.0",
+        "uptime_seconds": int(time.time() - _start_time),
+        "timestamp": datetime.utcnow().isoformat(),
+        "process": {
+            "pid": os.getpid(),
+            "cpu_percent": proc.cpu_percent(),
+            "memory_rss_mb": round(mem.rss / 1024 / 1024, 1),
+            "memory_vms_mb": round(mem.vms / 1024 / 1024, 1),
+            "threads": proc.num_threads(),
+        },
+    }
+
+    if _system.analytics:
+        summary = _system.analytics.get_summary()
+        metrics_data["business"] = {
+            "total_calls": summary["total_calls"],
+            "total_leads": summary["total_leads"],
+            "total_revenue": summary["total_revenue"],
+        }
+
+    if _system.sla:
+        metrics_data["sla"] = _system.sla.get_stats()
+
+    if _system.webhooks:
+        metrics_data["webhooks"] = _system.webhooks.get_stats()
+
+    return metrics_data
+
+@app.get("/export/leads")
+async def export_leads(format: str = "json"):
+    if not _system or not _system.persistence:
+        raise HTTPException(503, "System not initialized")
+    leads = await _system.persistence.get_leads(limit=1000)
+    if format == "csv":
+        import io
+        import csv
+        output = io.StringIO()
+        if leads:
+            writer = csv.DictWriter(output, fieldnames=leads[0].keys())
+            writer.writeheader()
+            writer.writerows(leads)
+        return Response(content=output.getvalue(), media_type="text/csv",
+                       headers={"Content-Disposition": "attachment; filename=leads.csv"})
+    return leads
+
+@app.get("/export/calls")
+async def export_calls(format: str = "json"):
+    return {"status": "ready", "format": "available"}
+
+@app.get("/export/analytics")
+async def export_analytics():
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    return _system.analytics.get_summary()
+
 @app.get("/status")
 async def full_status():
     return {
@@ -352,6 +454,7 @@ class StepsalesSystem:
         self.coach = None
         self.sla = None
         self.analytics = None
+        self.webhooks = None
         self._running = False
 
     async def initialize(self):
@@ -380,6 +483,7 @@ class StepsalesSystem:
         await self.sla.initialize()
         self.analytics = AnalyticsService(self.config)
         await self.analytics.initialize()
+        self.webhooks = WebhookRouter(self.config)
 
         logger.info("All services initialized successfully")
         self._running = True
