@@ -153,31 +153,35 @@ class TelnyxAIAssistant:
 
     async def _auto_start_ai_assistant(self, call_control_id: str, lead_id: str = None):
         """Wait for call to connect, then start AI Assistant."""
-        # Wait 5 seconds for the call to start ringing/connecting
-        await asyncio.sleep(5)
+        try:
+            logger.info(f"Background task started for {call_control_id}")
+            # Wait 5 seconds for the call to start ringing/connecting
+            await asyncio.sleep(5)
 
-        # Try to start AI Assistant with retries
-        for attempt in range(3):
-            if call_control_id not in self._call_registry:
-                logger.warning(f"Call {call_control_id} no longer in registry")
-                return
+            # Try to start AI Assistant with retries
+            for attempt in range(3):
+                if call_control_id not in self._call_registry:
+                    logger.warning(f"Call {call_control_id} no longer in registry")
+                    return
 
-            logger.info(f"Starting AI Assistant for {call_control_id} (attempt {attempt + 1})")
-            result = await self.start_ai_assistant(call_control_id)
+                logger.info(f"Starting AI Assistant for {call_control_id} (attempt {attempt + 1})")
+                result = await self.start_ai_assistant(call_control_id)
 
-            if result.get("success"):
-                logger.info(f"AI Assistant started for {call_control_id}")
-                return
+                if result.get("success"):
+                    logger.info(f"AI Assistant started for {call_control_id}")
+                    return
 
-            error = result.get("error", "")
-            if "already ended" in error.lower() or "422" in error:
-                logger.warning(f"Call ended before AI could start: {call_control_id}")
-                return
+                error = result.get("error", "")
+                if "already ended" in error.lower() or "422" in error:
+                    logger.warning(f"Call ended before AI could start: {call_control_id}")
+                    return
 
-            # Wait before retry
-            await asyncio.sleep(3)
+                # Wait before retry
+                await asyncio.sleep(3)
 
-        logger.error(f"Failed to start AI Assistant after 3 attempts: {call_control_id}")
+            logger.error(f"Failed to start AI Assistant after 3 attempts: {call_control_id}")
+        except Exception as e:
+            logger.error(f"Background AI start failed for {call_control_id}: {e}", exc_info=True)
 
     async def start_ai_assistant(self, call_control_id: str, prompt: str = None) -> dict:
         """Start Telnyx native AI Assistant on an active call.
