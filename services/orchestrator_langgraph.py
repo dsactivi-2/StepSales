@@ -1,7 +1,13 @@
 """
-LangGraph Conversation Orchestrator
+LangGraph Conversation Orchestrator with Barge-In Support
 Replaces heuristic keyword-matching with a real LangGraph state machine
 for the German AI sales conversation.
+
+Barge-In Architecture:
+- Deepgram STT hört durchgehend zu (auch während TTS spricht)
+- TTS läuft als cancellable asyncio Task
+- Bei speech_final während TTS → TTS wird abgebrochen, neue Antwort generiert
+- Paralleler Audio-Stream: STT → LLM → TTS → Telnyx
 
 Graph Structure:
   greet → discovery → qualify → offer → objection → close → followup → summary
@@ -9,6 +15,8 @@ Graph Structure:
             └── retry ─────┘              └── escalate ──┘
 """
 
+import asyncio
+import base64
 import logging
 import time
 from datetime import datetime
@@ -251,7 +259,7 @@ def _run_llm_turn(state: ConversationState, config: AppConfig, stage: str) -> di
 
 
 def route_next_state(state: ConversationState) -> Literal["discovery", "qualify", "offer", "objection", "close", "followup", "summary", "end"]:
-    """LangGraph conditional edge router - replaces heuristic if/elif."""
+    """LangGraph conditional edge router."""
 
     if state.turn_count >= state.max_turns:
         return "summary"
@@ -313,10 +321,6 @@ def route_next_state(state: ConversationState) -> Literal["discovery", "qualify"
     return state.stage
 
 
-def route_after_summary(state: ConversationState) -> Literal["end"]:
-    return "end"
-
-
 # ─── Graph Builder ───────────────────────────────────────────────────────────────
 
 def build_conversation_graph(config: AppConfig):
@@ -376,7 +380,14 @@ def build_conversation_graph(config: AppConfig):
 # ─── Orchestrator Class ──────────────────────────────────────────────────────────
 
 class LangGraphOrchestrator:
-    """LangGraph-based conversation orchestrator with full voice pipeline."""
+    """LangGraph-based conversation orchestrator with Barge-In support.
+
+    Barge-In Architecture:
+    - Deepgram STT hört durchgehend zu (auch während TTS spricht)
+    - TTS läuft als cancellable asyncio Task mit asyncio.Event
+    - Bei speech_final während TTS → TTS wird abgebrochen
+    - Neue Antwort wird sofort generiert und gesprochen
+    """
 
     def __init__(self, config=None):
         self.config = config or AppConfig
@@ -388,6 +399,9 @@ class LangGraphOrchestrator:
         self.persistence = PersistenceService(self.config)
         self.lead_intel = LeadIntelService(self.config)
         self._active_calls: Dict[str, dict] = {}
+        self._tts_cancel_events: Dict[str, asyncio.Event] = {}
+        self._current_tts_task: Optional[asyncio.Task] = None
+        self._latest_user_input: Dict[str, str] = {}
 
     async def initialize(self):
         await self.persistence.initialize()
@@ -397,7 +411,7 @@ class LangGraphOrchestrator:
         self.tts.register_audio_handler(self._on_audio_chunk)
         self.tts.register_complete_handler(self._on_tts_complete)
         await self.stt.connect()
-        logger.info("LangGraph Orchestrator initialized")
+        logger.info("LangGraph Orchestrator initialized with Barge-In support")
 
     async def start_outbound_call(self, phone_number: str, lead_id: str = None, context: dict = None):
         thread_id = f"call-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
@@ -418,6 +432,7 @@ class LangGraphOrchestrator:
         )
 
         self._active_calls[thread_id] = {"state": state, "context": context or {}}
+        self._tts_cancel_events[thread_id] = asyncio.Event()
 
         call_result = await self.telnyx.initiate_outbound_call(
             to_number=phone_number,
@@ -433,13 +448,69 @@ class LangGraphOrchestrator:
             stage = event.get("stage", "unknown")
             response = event.get("agent_response", "")
             if response:
-                await self._speak(response, state)
+                await self._speak_barge_in(response, state, thread_id)
 
             if event.get("should_end") or stage == "summary":
                 break
 
+        await self._cancel_tts(thread_id)
         await self._finalize_call(state)
         return state
+
+    async def _cancel_tts(self, thread_id: str):
+        """Cancel any running TTS task for this call."""
+        cancel_event = self._tts_cancel_events.get(thread_id)
+        if cancel_event:
+            cancel_event.set()
+
+        if self._current_tts_task and not self._current_tts_task.done():
+            self._current_tts_task.cancel()
+            try:
+                await self._current_tts_task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"TTS cancelled for {thread_id}")
+
+    async def _speak_barge_in(self, text: str, state: ConversationState, thread_id: str):
+        """Speak text with Barge-In support.
+
+        Starts TTS as a cancellable task. If user speaks during TTS,
+        the task is cancelled and the new user input is processed.
+        """
+        cancel_event = self._tts_cancel_events.get(thread_id)
+        if not cancel_event:
+            return
+
+        cancel_event.clear()
+
+        try:
+            audio = await self.tts.synthesize(text)
+            if not audio or not state.telnyx_call_id:
+                return
+
+            audio_b64 = base64.b64encode(audio).decode("utf-8")
+            send_task = asyncio.create_task(
+                self.telnyx.send_audio(state.telnyx_call_id, audio_b64)
+            )
+            self._current_tts_task = send_task
+
+            done, pending = await asyncio.wait(
+                [send_task, asyncio.create_task(cancel_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if cancel_event.is_set():
+                for task in pending:
+                    task.cancel()
+                logger.info(f"Barge-In: TTS interrupted for {thread_id}")
+                return
+
+            logger.info(f"TTS audio sent for {thread_id} ({len(audio)} bytes)")
+
+        except asyncio.CancelledError:
+            logger.info(f"TTS cancelled for {thread_id}")
+        except Exception as e:
+            logger.error(f"TTS failed: {e}")
 
     async def _on_telnyx_event(self, event_type: str, data: dict):
         if event_type == "call.connected":
@@ -448,10 +519,35 @@ class LangGraphOrchestrator:
             pass
 
     async def _on_transcript(self, data: dict):
-        pass
+        """Store interim transcript but don't trigger barge-in yet."""
+        thread_id = self._get_active_thread()
+        if thread_id:
+            self._latest_user_input[thread_id] = data.get("text", "")
 
     async def _on_end_of_turn(self, data: dict):
-        pass
+        """Barge-In trigger: User finished speaking during TTS.
+
+        Cancel running TTS and update state with user input.
+        """
+        thread_id = self._get_active_thread()
+        if not thread_id:
+            return
+
+        text = data.get("text", "").strip()
+        if not text:
+            return
+
+        logger.info(f"Barge-In: User said '{text[:50]}...' during TTS")
+
+        self._latest_user_input[thread_id] = text
+
+        await self._cancel_tts(thread_id)
+
+        state_data = self._active_calls.get(thread_id, {}).get("state")
+        if state_data:
+            state_data.user_input = text
+            if text.lower() in ["auf wiedersehen", "tschuss", "bye"]:
+                state_data.should_end = True
 
     async def _on_audio_chunk(self, chunk: bytes, is_final: bool):
         pass
@@ -459,15 +555,11 @@ class LangGraphOrchestrator:
     async def _on_tts_complete(self, data: dict):
         pass
 
-    async def _speak(self, text: str, state: ConversationState):
-        try:
-            audio = await self.tts.synthesize(text)
-            if audio and state.telnyx_call_id:
-                import base64
-                audio_b64 = base64.b64encode(audio).decode("utf-8")
-                await self.telnyx.send_audio(state.telnyx_call_id, audio_b64)
-        except Exception as e:
-            logger.error(f"TTS failed: {e}")
+    def _get_active_thread(self) -> Optional[str]:
+        """Get the currently active thread ID."""
+        if self._active_calls:
+            return list(self._active_calls.keys())[-1]
+        return None
 
     async def _finalize_call(self, state: ConversationState):
         duration = 0
@@ -494,6 +586,7 @@ class LangGraphOrchestrator:
             logger.error(f"Failed to save call: {e}")
 
         self._active_calls.pop(state.thread_id, None)
+        self._tts_cancel_events.pop(state.thread_id, None)
         logger.info(f"Call finalized: {state.thread_id} ({duration}s, stage={state.stage})")
 
     async def create_invoice_for_lead(self, lead_id, customer_email, customer_name, customer_company, items, description=""):
@@ -520,6 +613,8 @@ class LangGraphOrchestrator:
         return result
 
     async def close(self):
+        for thread_id in list(self._tts_cancel_events.keys()):
+            await self._cancel_tts(thread_id)
         await self.telnyx.close()
         await self.stt.disconnect()
         await self.tts.close()
