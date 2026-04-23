@@ -154,15 +154,17 @@ class GraphMemoryService:
     async def get_customer_graph(self, customer_id: str, max_hops: int = 2) -> dict:
         """Get the full relationship graph for a customer."""
         async with self._driver.session() as session:
-            result = await session.run(
-                """
+            # Neo4j doesn't allow parameters for variable-length relationships
+            # so we use a safe string interpolation with validation
+            if not isinstance(max_hops, int) or max_hops < 1 or max_hops > 5:
+                max_hops = 2
+            query = f"""
                 MATCH (entity) WHERE entity.id = $customer_id
-                MATCH path = (entity)-[*1..$max_hops]-(related)
+                MATCH path = (entity)-[*1..{max_hops}]-(related)
                 RETURN path
                 LIMIT 200
-                """,
-                customer_id=customer_id, max_hops=max_hops,
-            )
+            """
+            result = await session.run(query, customer_id=customer_id)
             nodes = {}
             relationships = []
             async for record in result:
