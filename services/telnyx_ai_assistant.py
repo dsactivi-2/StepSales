@@ -137,8 +137,8 @@ class TelnyxAIAssistant:
 
             await self._emit_event("call.initiated", self._call_registry[call_control_id])
 
-            # Auto-start AI Assistant after brief delay (call needs time to connect)
-            asyncio.create_task(self._auto_start_ai_assistant(call_control_id, lead_id))
+            # Auto-start AI Assistant immediately (Telnyx will start it when call connects)
+            asyncio.ensure_future(self._auto_start_ai_assistant(call_control_id, lead_id, delay=2))
 
             return {
                 "success": True,
@@ -151,12 +151,13 @@ class TelnyxAIAssistant:
             logger.error(f"Failed to initiate AI call to {to_number}: {e}")
             return {"success": False, "error": str(e), "to": to_number}
 
-    async def _auto_start_ai_assistant(self, call_control_id: str, lead_id: str = None):
+    async def _auto_start_ai_assistant(self, call_control_id: str, lead_id: str = None, delay: int = 2):
         """Wait for call to connect, then start AI Assistant."""
         try:
-            logger.info(f"Background task started for {call_control_id}")
-            # Wait 5 seconds for the call to start ringing/connecting
-            await asyncio.sleep(5)
+            logger.info(f"Background task started for {call_control_id} (delay={delay}s)")
+            # Wait for the call to start ringing/connecting
+            if delay > 0:
+                await asyncio.sleep(delay)
 
             # Try to start AI Assistant with retries
             for attempt in range(3):
