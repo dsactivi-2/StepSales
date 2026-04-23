@@ -152,34 +152,38 @@ class TelnyxAIAssistant:
             return {"success": False, "error": str(e), "to": to_number}
 
     async def _auto_start_ai_assistant(self, call_control_id: str, lead_id: str = None, delay: int = 2):
-        """Wait for call to connect, then start AI Assistant."""
+        """Poll call status until connected, then start AI Assistant."""
         try:
-            logger.info(f"Background task started for {call_control_id} (delay={delay}s)")
+            logger.info(f"Background task started for {call_control_id}")
 
-            # Try to start AI Assistant with retries over 30 seconds
-            for attempt in range(6):
-                if call_control_id not in self._call_registry:
-                    logger.warning(f"Call {call_control_id} no longer in registry")
-                    return
+            # Poll call status until connected or ended
+            for poll_attempt in range(15):  # Poll for up to 30 seconds
+                await asyncio.sleep(2)
 
-                logger.info(f"Starting AI Assistant for {call_control_id} (attempt {attempt + 1})")
-                result = await self.start_ai_assistant(call_control_id)
+                # Check call status
+                try:
+                    resp = await self._client.get(f"/calls/{call_control_id}")
+                    if resp.status_code == 200:
+                        call_data = resp.json().get("data", {})
+                        state = call_data.get("state", "unknown")
+                        logger.info(f"Call {call_control_id} state: {state}")
 
-                if result.get("success"):
-                    logger.info(f"AI Assistant started for {call_control_id}")
-                    return
+                        if state == "connected":
+                            # Call is connected, start AI Assistant
+                            result = await self.start_ai_assistant(call_control_id)
+                            if result.get("success"):
+                                logger.info(f"AI Assistant started for {call_control_id}")
+                                return
+                            else:
+                                logger.warning(f"Failed to start AI: {result.get('error')}")
+                                return
+                        elif state in ["completed", "failed", "rejected"]:
+                            logger.warning(f"Call ended with state: {state}")
+                            return
+                except Exception as e:
+                    logger.debug(f"Poll error (attempt {poll_attempt + 1}): {e}")
 
-                error = result.get("error", "")
-                if "already ended" in error.lower():
-                    logger.warning(f"Call ended before AI could start: {call_control_id}")
-                    return
-
-                # Wait before retry (increase delay each attempt)
-                wait_time = 5 + (attempt * 3)
-                logger.info(f"Retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-
-            logger.error(f"Failed to start AI Assistant after 6 attempts: {call_control_id}")
+            logger.error(f"Call didn't connect within 30 seconds: {call_control_id}")
         except Exception as e:
             logger.error(f"Background AI start failed for {call_control_id}: {e}", exc_info=True)
                 if call_control_id not in self._call_registry:
