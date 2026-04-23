@@ -37,6 +37,7 @@ from services.analytics import AnalyticsService
 from services.webhooks import WebhookRouter
 from services.audit_monitoring import AuditAndMonitoringService, AuditCategory, AuditLevel
 from services.graph_memory import GraphMemoryService
+from services.telnyx_ai_assistant import TelnyxAIAssistant
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -335,13 +336,23 @@ async def record_call(duration: float, stage: str, deal_value: float = 0):
 
 @app.post("/webhooks/telnyx")
 async def telnyx_webhook(request: Request):
+    """Handle Telnyx Call Control webhooks including AI Assistant events."""
     if not _system or not _system.webhooks:
         raise HTTPException(503, "System not initialized")
     payload = await request.json()
+    event_type = payload.get("event_type", "")
+
+    # Route AI Assistant events to the AI service
+    if "ai_assistant" in event_type and _system.telnyx_ai:
+        await _system.telnyx_ai.handle_ai_webhook(payload)
+
+    # Route call events to AI service for auto-start
+    if "call." in event_type and _system.telnyx_ai:
+        await _system.telnyx_ai.handle_ai_webhook(payload)
+
     signature = request.headers.get("X-Telnyx-Signature-V2", "")
     timestamp = request.headers.get("X-Telnyx-Signature-Timestamp", "")
-    result = await _system.webhooks.handle_telnyx_webhook(payload, signature, timestamp)
-    return result
+    return await _system.webhooks.handle_telnyx_webhook(payload, signature, timestamp)
 
 @app.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
@@ -432,30 +443,27 @@ async def export_analytics():
         raise HTTPException(503, "System not initialized")
     return _system.analytics.get_summary()
 
-@app.get("/audit/log")
-async def audit_log(category: str = "", level: str = "", actor: str = "", limit: int = 100):
-    if not _system or not _system.audit:
-        raise HTTPException(503, "System not initialized")
-    return _system.audit.get_audit_log(category or None, level or None, actor or None, limit)
+@app.post("/call/ai")
+async def trigger_ai_call(req: CallRequest):
+    """Initiate an outbound call with Telnyx native AI Assistant.
 
-@app.get("/audit/security")
-async def audit_security():
-    if not _system or not _system.audit:
+    Telnyx handles the entire voice conversation:
+    VAD → STT → OpenAI GPT-4o → TTS → Audio back to caller
+    """
+    if not _system or not _system.telnyx_ai:
         raise HTTPException(503, "System not initialized")
-    scan = await _system.audit.run_security_scan()
-    return scan.to_dict()
+    result = await _system.telnyx_ai.initiate_ai_call(
+        to_number=req.phone,
+        lead_id=req.lead_id,
+    )
+    return result
 
-@app.get("/audit/compliance")
-async def audit_compliance():
-    if not _system or not _system.audit:
+@app.get("/call/ai/active")
+async def active_ai_calls():
+    if not _system or not _system.telnyx_ai:
         raise HTTPException(503, "System not initialized")
-    return await _system.audit.run_compliance_check()
+    return {"active_calls": _system.telnyx_ai.get_active_calls()}
 
-@app.get("/audit/summary")
-async def audit_summary():
-    if not _system or not _system.audit:
-        raise HTTPException(503, "System not initialized")
-    return _system.audit.get_summary()
 
 @app.get("/graph/stats")
 async def graph_stats():
@@ -539,6 +547,7 @@ class StepsalesSystem:
         self.webhooks = None
         self.audit = None
         self.graph_memory = None
+        self.telnyx_ai = None
         self._running = False
 
     async def initialize(self):
@@ -573,6 +582,7 @@ class StepsalesSystem:
         self.graph_memory = GraphMemoryService(self.config)
         await self.graph_memory.initialize()
         await self.graph_memory.seed_graph_workflows()
+        self.telnyx_ai = TelnyxAIAssistant(self.config)
 
         logger.info("All services initialized successfully")
         self._running = True
@@ -653,6 +663,8 @@ class StepsalesSystem:
             self.sla.stop_monitor()
         if self.graph_memory:
             await self.graph_memory.close()
+        if self.telnyx_ai:
+            await self.telnyx_ai.close()
 
         logger.info("All services shut down")
 
