@@ -29,6 +29,8 @@ from services.lead_intel import LeadIntelService
 from services.orchestrator_langgraph import LangGraphOrchestrator
 from services.fulfillment import FulfillmentService, JobAdSubmission
 from services.cadence import OutboundCadence, CadenceSequence
+from services.knowledgebase import KnowledgebaseService
+from services.agent_coach import AgentCoachService
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -79,6 +81,20 @@ class IntentRequest(BaseModel):
     user_input: str
     current_stage: str = "discovery"
     agent_response: str = ""
+
+class CoachAnalyzeRequest(BaseModel):
+    call_id: str
+    speaker: str
+    text: str
+    stage: str = "discovery"
+
+class CoachScoreRequest(BaseModel):
+    call_id: str
+
+class KBSearchRequest(BaseModel):
+    query: str
+    top_k: int = 3
+    category: str = ""
 
 @app.get("/health")
 async def health():
@@ -190,6 +206,47 @@ async def get_cadence_status():
         raise HTTPException(503, "System not initialized")
     return _system.cadence.get_queue_status()
 
+@app.post("/coach/analyze")
+async def coach_analyze(req: CoachAnalyzeRequest):
+    if not _system or not _system.coach:
+        raise HTTPException(503, "System not initialized")
+    hints = _system.coach.analyze_turn(req.call_id, req.speaker, req.text, req.stage)
+    return {"hints": [h.to_dict() for h in hints], "call_id": req.call_id}
+
+@app.post("/coach/score")
+async def coach_score(req: CoachScoreRequest):
+    if not _system or not _system.coach:
+        raise HTTPException(503, "System not initialized")
+    score = _system.coach.score_call(req.call_id)
+    return score.to_dict()
+
+@app.get("/coach/history")
+async def coach_history(limit: int = 20):
+    if not _system or not _system.coach:
+        raise HTTPException(503, "System not initialized")
+    return {"history": _system.coach.get_qa_history(limit), "average": _system.coach.get_avg_score()}
+
+@app.get("/kb/documents")
+async def kb_list_documents():
+    if not _system or not _system.knowledgebase:
+        raise HTTPException(503, "System not initialized")
+    docs = await _system.knowledgebase.get_all_documents()
+    return {"documents": docs, "count": len(docs)}
+
+@app.post("/kb/search")
+async def kb_search(req: KBSearchRequest):
+    if not _system or not _system.knowledgebase:
+        raise HTTPException(503, "System not initialized")
+    results = await _system.knowledgebase.search(req.query, req.top_k, req.category or None)
+    return {"query": req.query, "results": results, "count": len(results)}
+
+@app.get("/kb/context/{stage}")
+async def kb_context(stage: str, user_input: str = ""):
+    if not _system or not _system.knowledgebase:
+        raise HTTPException(503, "System not initialized")
+    context = await _system.knowledgebase.get_context_for_stage(stage, user_input)
+    return {"stage": stage, "context": context}
+
 @app.get("/status")
 async def full_status():
     return {
@@ -200,8 +257,12 @@ async def full_status():
             "billing": _system.billing is not None,
             "fulfillment": _system.fulfillment is not None,
             "cadence": _system.cadence is not None,
+            "knowledgebase": _system.knowledgebase is not None,
+            "coach": _system.coach is not None,
         },
         "cadence": _system.cadence.get_queue_status() if _system.cadence else {},
+        "coach_avg": _system.coach.get_avg_score() if _system.coach else {},
+        "kb_docs": len(_system.knowledgebase._local_cache) if _system.knowledgebase else 0,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -217,6 +278,8 @@ class StepsalesSystem:
         self.telnyx = None
         self.fulfillment = None
         self.cadence = None
+        self.knowledgebase = None
+        self.coach = None
         self._running = False
 
     async def initialize(self):
@@ -238,6 +301,9 @@ class StepsalesSystem:
         self.billing = StripeBilling(self.config)
         self.fulfillment = FulfillmentService(self.config)
         self.cadence = OutboundCadence(self.config, self.orchestrator)
+        self.knowledgebase = KnowledgebaseService(self.config)
+        await self.knowledgebase.initialize()
+        self.coach = AgentCoachService(self.config)
 
         logger.info("All services initialized successfully")
         self._running = True
@@ -312,6 +378,8 @@ class StepsalesSystem:
             await self.fulfillment.close()
         if self.cadence:
             self.cadence.stop_scheduler()
+        if self.knowledgebase:
+            await self.knowledgebase.close()
 
         logger.info("All services shut down")
 
