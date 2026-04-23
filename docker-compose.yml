@@ -7,18 +7,22 @@ services:
       dockerfile: Dockerfile
     container_name: stepsales-agent
     ports:
-      - "8000:8000"
+      - "8010:8010"
+    env_file:
+      - path: ./environment/.env
+        required: false
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=gpt-realtime-1.5
       - VOICE=shimmer
+      - HOST=0.0.0.0
+      - PORT=8010
       - LOG_LEVEL=INFO
     volumes:
       - ./data:/app/data
       - ./config:/app/config
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -30,7 +34,7 @@ services:
     container_name: stepstone-mcp
     working_dir: /workspace
     volumes:
-      - ../mcp-stepstone:/workspace
+      - .:/workspace
     environment:
       - LOG_LEVEL=INFO
     command: python stepstone_server.py

@@ -1,8 +1,8 @@
 # Stepsales — German Telesales Agent for Job Listing Sales
 
-A production-ready B2B telesales agent powered by OpenAI Realtime API for selling job listings via Stepstone.de integration.
+A B2B telesales agent prototype for German job-listing sales workflows with OpenAI-oriented voice tooling and local web call handling.
 
-![Status](https://img.shields.io/badge/status-production%20ready-brightgreen)
+![Status](https://img.shields.io/badge/status-current%20prototype-yellow)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -49,7 +49,7 @@ Employers need to hire. Instead of visiting Stepstone manually, Stepsales:
 | Feature | Details |
 |---------|---------|
 | **🗣️ Natural German Voice** | Uses OpenAI gpt-realtime-1.5 + "shimmer" voice |
-| **🔍 Live Job Search** | Integrates mcp-stepstone for real-time Stepstone.de data |
+| **🔍 Job Search Tooling** | Uses a mocked `search_jobs` flow while Stepstone live parsing is still stubbed |
 | **📊 Lead Qualification** | Auto-qualify via predefined questions (company, budget, timeline) |
 | **📅 Demo Booking** | Built-in slot availability + booking confirmation |
 | **📧 Follow-up Automation** | Send case studies, pricing guides, product briefs |
@@ -59,6 +59,13 @@ Employers need to hire. Instead of visiting Stepstone manually, Stepsales:
 | **🐳 Docker Ready** | Production deployment via Docker Compose |
 
 ---
+
+## ⚠️ Current State and Gaps
+
+- The web call path in `web_server.py` currently uses a heuristic response path for conversation flow testing.
+- The realtime voice integration is not yet a full OpenAI Realtime end-to-end call loop.
+- `search_jobs` currently returns mocked data, and Stepstone parsing remains a stub.
+- CRM/call session data is currently in-memory and resets on process restart.
 
 ## 🏗️ Architecture
 
@@ -400,13 +407,13 @@ pytest tests/test_agent.py::TestLead -v
 
 ```bash
 # Build and start services
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f stepsales-agent
+docker compose logs -f stepsales-agent
 
 # Stop services
-docker-compose down
+docker compose down
 ```
 
 ### Docker Standalone
@@ -417,7 +424,7 @@ docker build -t stepsales-agent:latest .
 
 # Run container
 docker run -d \
-  -p 8000:8000 \
+  -p 8010:8010 \
   -e OPENAI_API_KEY=sk-proj-xxxxx \
   -v ./data:/app/data \
   --name stepsales-agent \
@@ -446,7 +453,7 @@ docker run -d \
 
 ```bash
 # Check if agent is running
-curl http://localhost:8000/health
+curl http://localhost:8010/health
 
 # Expected: 200 OK
 ```
@@ -491,14 +498,14 @@ Error: Unknown tool: search_jobs
 
 #### 4. Port Already in Use
 ```
-Error: Address already in use on port 8000
+Error: Address already in use on port 8010
 ```
 
 **Solution:**
 ```bash
 # Change port in docker-compose.yml
 # Or kill existing process
-lsof -i :8000
+lsof -i :8010
 kill -9 <PID>
 ```
 
@@ -617,4 +624,4 @@ For issues or questions:
 
 **Made with ❤️ for B2B sales automation**
 
-**Status:** ✅ Production Ready | **Version:** 1.0.0 | **Updated:** 2026-04-22
+**Status:** ⚠️ Active Prototype | **Version:** 1.0.0 | **Updated:** 2026-04-23

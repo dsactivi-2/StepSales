@@ -6,6 +6,7 @@ Configuration management for Stepsales Telesales Agent
 import os
 from typing import Optional
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -47,10 +48,20 @@ class TelesalesConfig:
     crm_enabled: bool = False
     crm_api_key: Optional[str] = None
 
-    # Logging
-    log_level: str = "INFO"
+    # Persistence
+    data_dir: str = "./data"
     save_transcripts: bool = True
     transcript_dir: str = "./data/transcripts"
+
+    # Logging
+    log_level: str = "INFO"
+
+
+@dataclass
+class RuntimeConfig:
+    """Runtime/web server configuration"""
+    host: str = "0.0.0.0"
+    port: int = 8000
 
 
 class Config:
@@ -75,12 +86,31 @@ class Config:
         max_call_duration=int(os.getenv("MAX_CALL_DURATION", "900")),
         crm_enabled=os.getenv("CRM_ENABLED", "false").lower() == "true",
         crm_api_key=os.getenv("CRM_API_KEY"),
+        data_dir=os.getenv("DATA_DIR", "./data"),
+        save_transcripts=os.getenv("SAVE_TRANSCRIPTS", "true").lower() == "true",
+        transcript_dir=os.getenv("TRANSCRIPT_DIR", "./data/transcripts"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+    )
+
+    runtime = RuntimeConfig(
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
     )
 
     @classmethod
     def validate(cls) -> bool:
-        """Validate critical configuration"""
+        """Validate critical configuration and prepare runtime paths"""
         if not cls.openai.api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
+
+        if cls.runtime.port <= 0 or cls.runtime.port > 65535:
+            raise ValueError(f"Invalid PORT configured: {cls.runtime.port}")
+
+        if cls.telesales.save_transcripts:
+            transcript_path = Path(cls.telesales.transcript_dir)
+            transcript_path.mkdir(parents=True, exist_ok=True)
+
+        data_path = Path(cls.telesales.data_dir)
+        data_path.mkdir(parents=True, exist_ok=True)
+
         return True

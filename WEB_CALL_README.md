@@ -30,11 +30,11 @@ pip install -r requirements.txt
 python web_server.py
 ```
 
-Server listens on `http://localhost:8000`
+Server listens on `http://localhost:8010`
 
 ### Start Live Call
 
-1. Open **http://localhost:8000** in browser
+1. Open **http://localhost:8010** in browser
 2. Click **"🎤 Call Starten"**
 3. Allow microphone access
 4. Start talking to Alex (the Agent)
@@ -100,7 +100,7 @@ Browser (Display)
 
 **GET /health**
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8010/health
 ```
 Response:
 ```json
@@ -113,7 +113,7 @@ Response:
 
 **GET /api/calls/{session_id}/transcript**
 ```bash
-curl http://localhost:8000/api/calls/abc123/transcript
+curl http://localhost:8010/api/calls/abc123/transcript
 ```
 Response:
 ```json
@@ -129,7 +129,7 @@ Response:
 
 **POST /api/calls/{session_id}/end**
 ```bash
-curl -X POST http://localhost:8000/api/calls/abc123/end
+curl -X POST http://localhost:8010/api/calls/abc123/end
 ```
 
 ## 🧪 Testing
@@ -158,7 +158,7 @@ Configure via environment variables (in `.env`):
 
 ```bash
 # Host/Port (Optional)
-PORT=8001
+PORT=8010
 HOST=0.0.0.0
 
 # Or set via command line
@@ -166,7 +166,7 @@ PORT=8080 python web_server.py
 ```
 
 **Default values:**
-- `PORT=8001` (if port 8000 is in use)
+- `PORT=8010` (default for local and docker-compose runs)
 - `HOST=0.0.0.0` (listen on all interfaces)
 
 ### Browser Requirements
@@ -204,7 +204,7 @@ Current version is a **Minimum Viable Product** focused on conversation flow:
 - Call recording (transcript)
 
 ⏳ **Future Enhancements:**
-- Real OpenAI Realtime API integration (currently heuristic-based)
+- Full OpenAI Realtime API call loop integration (current server path remains heuristic-based)
 - TTS (Text-to-Speech) audio output
 - STT (Speech-to-Text) transcription
 - Sales tools integration (search_jobs, qualify_lead, etc.)
@@ -221,7 +221,7 @@ Current version is a **Minimum Viable Product** focused on conversation flow:
 docker build -t stepsales-web:latest .
 
 # Run
-docker run -d -p 8000:8000 stepsales-web:latest
+docker run -d -p 8010:8010 stepsales-web:latest
 
 # Or with Docker Compose
 docker-compose up -d
@@ -242,7 +242,7 @@ server {
     server_name stepsales.example.com;
 
     location / {
-        proxy_pass http://localhost:8000;
+        proxy_pass http://localhost:8010;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -250,7 +250,7 @@ server {
     }
 
     location /ws {
-        proxy_pass http://localhost:8000;
+        proxy_pass http://localhost:8010;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "Upgrade";
@@ -312,8 +312,8 @@ Available via `/health` endpoint:
 **Problem:** "WebSocket-Fehler"
 
 **Solution:**
-1. Check if server is running: `http://localhost:8000/health`
-2. Verify firewall not blocking port 8000
+1. Check if server is running: `http://localhost:8010/health`
+2. Verify firewall not blocking port 8010
 3. Check browser console for network errors
 4. Restart web server
 
@@ -336,13 +336,13 @@ Available via `/health` endpoint:
 python web_server.py &
 
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:8010/health
 
 # Get transcript after call
-curl http://localhost:8000/api/calls/{session_id}/transcript
+curl http://localhost:8010/api/calls/{session_id}/transcript
 
 # End call
-curl -X POST http://localhost:8000/api/calls/{session_id}/end
+curl -X POST http://localhost:8010/api/calls/{session_id}/end
 ```
 
 ### Programmatic Access
@@ -385,4 +385,4 @@ MIT License – See LICENSE file
 
 ---
 
-**Status:** ✅ Production Ready (MVP) | **Version:** 1.0.0 | **Last Updated:** 2026-04-22
+**Status:** ⚠️ MVP Prototype | **Version:** 1.0.0 | **Last Updated:** 2026-04-23

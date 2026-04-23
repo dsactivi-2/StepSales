@@ -1,0 +1,119 @@
+[
+  {
+    "id": "vec-001",
+    "text": "Local runtime port is standardized to 8010 for development consistency.",
+    "tags": [
+      "runtime",
+      "port",
+      "dev"
+    ],
+    "source": "memory-ledger",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 365,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-002",
+    "text": "Canonical environment file path is environment/.env; values must never be copied into memory artifacts.",
+    "tags": [
+      "env",
+      "config",
+      "safety"
+    ],
+    "source": "decision:mem-002",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 365,
+    "sensitivity": "restricted-redacted"
+  },
+  {
+    "id": "vec-003",
+    "text": "Known gaps include reliability documentation depth and validation coverage.",
+    "tags": [
+      "gap",
+      "reliability",
+      "docs"
+    ],
+    "source": "decision:mem-003",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 90,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-004",
+    "text": "Telnyx provider setup is pending final integration and verification steps.",
+    "tags": [
+      "provider",
+      "telnyx",
+      "pending"
+    ],
+    "source": "project-notes",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 60,
+    "sensitivity": "restricted-redacted"
+  },
+  {
+    "id": "vec-005",
+    "text": "Realtime pipeline enablement remains pending due to unresolved implementation details.",
+    "tags": [
+      "realtime",
+      "pipeline",
+      "pending"
+    ],
+    "source": "project-notes",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 60,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-006",
+    "text": "Memory sync discipline is required at end of sessions to prevent stale context drift.",
+    "tags": [
+      "memory",
+      "process",
+      "sync"
+    ],
+    "source": "memory-ledger",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 180,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-007",
+    "text": "Agentic RAG memory extension uses ledger plus JSONL plus vector plus graph connectors without external services.",
+    "tags": [
+      "agentic",
+      "rag",
+      "architecture"
+    ],
+    "source": "architecture",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 180,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-008",
+    "text": "Open operational gap: provider fallback behavior and failure-mode runbook need explicit documentation.",
+    "tags": [
+      "gap",
+      "provider",
+      "runbook"
+    ],
+    "source": "project-notes",
+    "created_at": "2026-04-23T08:06:14Z",
+    "ttl_days": 90,
+    "sensitivity": "public"
+  },
+  {
+    "id": "vec-009",
+    "text": "Added agentic rag vector graph memory scaffolding",
+    "tags": [
+      "kilo-memory",
+      "event",
+      "active"
+    ],
+    "source": "decision:mem-004",
+    "created_at": "2026-04-23T08:14:24Z",
+    "ttl_days": 90,
+    "sensitivity": "public"
+  }
+]

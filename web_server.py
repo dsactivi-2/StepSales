@@ -11,6 +11,7 @@ import base64
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -76,6 +77,22 @@ class CallSession:
                 "text": text,
             }
         )
+
+    def persist_transcript(self):
+        """Persist transcript for audit/compliance"""
+        if not Config.telesales.save_transcripts:
+            return
+
+        transcript_dir = Path(Config.telesales.transcript_dir)
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        file_path = transcript_dir / f"{self.session_id}.json"
+
+        payload = {
+            "summary": self.get_call_summary(),
+            "messages": self.transcript,
+            "agent_summary": self.agent.get_call_summary(),
+        }
+        file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def get_call_summary(self) -> dict:
         """Get call summary"""
@@ -262,6 +279,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 elif data["type"] == "end_call":
                     call_duration = (time.time() - ws_start) * 1000
                     summary = session.get_call_summary()
+                    session.persist_transcript()
 
                     log_step(
                         logger_websocket,
@@ -313,7 +331,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 "message_count": message_count,
             },
         )
-        session.connected = False
+        if "session" in locals():
+            session.connected = False
+            session.persist_transcript()
         if session_id in active_sessions:
             del active_sessions[session_id]
 
@@ -335,35 +355,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 
 async def generate_agent_response(session: CallSession, user_input: str) -> str:
-    """Generate agent response (simulated for now)"""
-    # In production, this would call OpenAI Realtime API
-    # For MVP, use simple heuristics
-
-    user_lower = user_input.lower()
-
-    # Simple responses
-    if any(
-        word in user_lower for word in ["hallo", "guten tag", "hallo alex"]
-    ):
-        return "Guten Tag! Schön, Sie zu sprechen. Kann ich Ihnen bei der Personalsuche helfen?"
-
-    elif any(word in user_lower for word in ["ja", "ja gerne", "ja bitte"]):
-        return "Großartig! Erzählen Sie mir, welche Positionen Sie derzeit besetzen möchten."
-
-    elif any(word in user_lower for word in ["entwickler", "engineer", "software"]):
-        return "Software Engineers sind sehr gefragt. Wie viele Stellen möchten Sie besetzen und in welcher Region?"
-
-    elif any(word in user_lower for word in ["berlin", "münchen", "köln", "hamburg"]):
-        return "Perfekt! Wir haben gerade interessante Profile aus der Region. Möchten Sie eine Vorschau bekommen?"
-
-    elif any(word in user_lower for word in ["danke", "danke dir", "dankeschön"]):
-        return "Gerne geschehen! Falls Sie weitere Fragen haben, stehe ich gerne zur Verfügung."
-
-    elif any(word in user_lower for word in ["auf wiedersehen", "tschüss", "bye"]):
-        return "Auf Wiedersehen! Danke für das Gespräch. Haben Sie einen schönen Tag!"
-
-    else:
-        return f"Interessant, dass Sie erwähnen: {user_input[:30]}... Können Sie mir mehr Details geben?"
+    """Generate stage-aware agent response"""
+    return session.agent.generate_response(user_input)
 
 
 @app.post("/api/calls/{session_id}/end")
@@ -462,8 +455,8 @@ def main():
             raise
 
         # Get port from environment or use default
-        port = int(os.getenv("PORT", "8001"))
-        host = os.getenv("HOST", "0.0.0.0")
+        port = Config.runtime.port
+        host = Config.runtime.host
 
         log_step(
             logger,

@@ -7,6 +7,7 @@ German-speaking voice agent for B2B job sales via OpenAI Realtime API
 import asyncio
 import json
 import logging
+import re
 import uuid
 import time
 from datetime import datetime
@@ -112,6 +113,7 @@ Heute ist: {current_date}
             self.contact_info: Dict = {}
             self.job_interests: List[str] = []
             self.current_qualification_score = 0
+            self.current_stage = "greet"
 
             duration = (time.time() - start) * 1000
             log_step(
@@ -521,6 +523,59 @@ Heute ist: {current_date}
             )
             raise
 
+    def _extract_contact_hints(self, user_input: str) -> None:
+        """Extract lightweight contact details from user text"""
+        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_input)
+        if email_match:
+            self.contact_info["email"] = email_match.group(0)
+
+    def generate_response(self, user_input: str) -> str:
+        """Stage-aware response generation for web flow"""
+        text = user_input.strip()
+        user_lower = text.lower()
+        self.conversation_history.append(
+            {
+                "speaker": "user",
+                "text": text,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        self._extract_contact_hints(text)
+
+        if any(word in user_lower for word in ["auf wiedersehen", "tschüss", "bye"]):
+            self.current_stage = "close"
+            response = "Auf Wiedersehen und danke für Ihre Zeit. Ich melde mich mit den nächsten Schritten."
+        elif self.current_stage == "greet":
+            self.current_stage = "discovery"
+            response = "Guten Tag, schön, dass ich Sie erreiche. Welche Stellen möchten Sie gerade besetzen?"
+        elif any(word in user_lower for word in ["kein bedarf", "kein interesse", "dnc", "nicht mehr anrufen"]):
+            self.current_stage = "close"
+            response = "Verstanden, ich respektiere das. Ich markiere Sie entsprechend und wünsche Ihnen einen erfolgreichen Tag."
+        elif any(word in user_lower for word in ["zu teuer", "preis", "kosten"]):
+            self.current_stage = "objection"
+            response = "Verständlich. Viele Teams senken mit uns Time-to-Hire und externe Recruiting-Kosten. Darf ich kurz Ihren aktuellen Bedarf und Rahmen abgleichen?"
+        elif any(word in user_lower for word in ["entwickler", "engineer", "software", "vertrieb", "sales", "hr"]):
+            self.current_stage = "qualify"
+            response = "Danke, das hilft. Wie viele Rollen sind offen und bis wann sollen sie besetzt sein?"
+        elif any(word in user_lower for word in ["woche", "monat", "sofort", "dringend"]):
+            self.current_stage = "offer"
+            response = "Perfekt. Auf Basis Ihrer Timeline kann ich ein passendes Paket vorbereiten. Soll ich direkt eine kurze Demo für diese Woche einplanen?"
+        elif any(word in user_lower for word in ["ja", "gerne", "okay", "einverstanden"]):
+            self.current_stage = "next_action"
+            response = "Super, dann reserviere ich einen Termin und sende die Bestätigung per E-Mail. Welche Adresse soll ich verwenden?"
+        else:
+            response = "Danke für den Kontext. Damit ich passend empfehlen kann: was ist aktuell Ihre größte Hürde bei der Besetzung?"
+
+        self.conversation_history.append(
+            {
+                "speaker": "agent",
+                "text": response,
+                "timestamp": datetime.now().isoformat(),
+                "stage": self.current_stage,
+            }
+        )
+        return response
+
     def get_call_summary(self) -> Dict:
         """Get call summary for logging"""
         duration = (datetime.now() - self.start_time).total_seconds()
@@ -530,6 +585,8 @@ Heute ist: {current_date}
             "contact_info": self.contact_info,
             "qualification_score": self.current_qualification_score,
             "job_interests": self.job_interests,
+            "conversation_turns": len(self.conversation_history),
+            "stage": self.current_stage,
             "timestamp": self.start_time.isoformat(),
         }
 
