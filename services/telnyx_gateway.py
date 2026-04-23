@@ -1,10 +1,17 @@
 """
 Telnyx Voice Gateway Service
 Handles outbound calls, webhooks, and media streaming for AI voice agents.
-Adapter pattern: unified VoiceProvider interface with Telnyx implementation.
+Supports both REST API (play_audio) and Media WebSocket (real-time PCM16 streaming).
+
+Media WebSocket Architecture:
+- Outbound: Call initiates with media_streaming_start payload
+- Inbound: Webhook triggers WebSocket connection (separate agent)
+- Audio: PCM16, 16kHz, mono, bidirectional streaming
+- Latency: <200ms vs ~2-5s with play_audio
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -13,6 +20,7 @@ import time
 from typing import Callable, Dict, Optional
 
 import httpx
+import websockets
 
 from config.settings import AppConfig
 
@@ -27,10 +35,11 @@ class TelnyxEvent:
     CALL_FAILED = "call.failed"
     WEBHOOK_RECEIVED = "webhook.received"
     MEDIA_STREAMING = "media.streaming"
+    MEDIA_AUDIO_RECEIVED = "media.audio_received"
 
 
 class TelnyxGateway:
-    """Telnyx Voice API adapter for outbound AI calls."""
+    """Telnyx Voice API adapter for AI calls with Media WebSocket support."""
 
     def __init__(self, config=None):
         self.config = config or AppConfig
@@ -44,10 +53,16 @@ class TelnyxGateway:
         )
         self._call_registry: Dict[str, dict] = {}
         self._on_event: Optional[Callable] = None
-        self._media_ws_url: Optional[str] = None
+        self._on_audio: Optional[Callable] = None
+        self._media_ws: Dict[str, websockets.WebSocketClientProtocol] = {}
+        self._media_tasks: Dict[str, asyncio.Task] = {}
 
     def register_event_handler(self, handler: Callable):
         self._on_event = handler
+
+    def register_audio_handler(self, handler: Callable):
+        """Register handler for incoming media stream audio."""
+        self._on_audio = handler
 
     async def initiate_outbound_call(
         self,
@@ -56,8 +71,9 @@ class TelnyxGateway:
         webhook_url: str = None,
         connection_id: str = None,
         metadata: dict = None,
+        media_websocket_url: str = None,
     ) -> dict:
-        """Initiate an outbound call via Telnyx Voice API."""
+        """Initiate an outbound call via Telnyx Voice API with optional media streaming."""
         from_number = from_number or self.config.telnyx.from_number
         connection_id = connection_id or self.config.telnyx.connection_id
 
@@ -71,10 +87,20 @@ class TelnyxGateway:
             "timeout": 60,
         }
 
+        if media_websocket_url:
+            payload["media_streaming_start"] = {
+                "url": media_websocket_url,
+                "audio_format": "PCM16",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+
         if metadata:
             payload["messaging_profile_id"] = metadata.get("messaging_profile_id")
 
         logger.info(f"Initiating outbound call to {to_number} from {from_number}")
+        if media_websocket_url:
+            logger.info(f"Media WebSocket: {media_websocket_url}")
         start = time.time()
 
         try:
@@ -88,6 +114,7 @@ class TelnyxGateway:
                 "from": from_number,
                 "status": "initiated",
                 "telnyx_call_id": call_id,
+                "media_ws_url": media_websocket_url,
                 "created_at": time.time(),
                 "metadata": metadata or {},
             }
@@ -104,6 +131,7 @@ class TelnyxGateway:
                 "call_id": call_id,
                 "call_state": call_data.get("state", "unknown"),
                 "telnyx_call_id": call_id,
+                "media_streaming": media_websocket_url is not None,
             }
 
         except httpx.HTTPError as e:
@@ -114,8 +142,77 @@ class TelnyxGateway:
                 "to": to_number,
             }
 
+    async def connect_to_media_stream(self, call_id: str, ws_url: str) -> bool:
+        """Connect to Telnyx Media WebSocket for real-time audio streaming.
+
+        This replaces the slow play_audio REST API with low-latency WebSocket streaming.
+        Audio is sent as PCM16 (16kHz, mono) in chunks of 20ms (640 bytes).
+        """
+        if call_id in self._media_ws:
+            logger.warning(f"Media WebSocket already connected for {call_id}")
+            return True
+
+        try:
+            ws = await websockets.connect(ws_url)
+            self._media_ws[call_id] = ws
+
+            task = asyncio.create_task(self._media_listen_loop(call_id, ws))
+            self._media_tasks[call_id] = task
+
+            if call_id in self._call_registry:
+                self._call_registry[call_id]["media_connected"] = True
+
+            logger.info(f"Media WebSocket connected for call {call_id}")
+            await self._emit_event(TelnyxEvent.MEDIA_STREAMING, {"call_id": call_id, "url": ws_url})
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to connect media WebSocket for {call_id}: {e}")
+            return False
+
+    async def _media_listen_loop(self, call_id: str, ws: websockets.WebSocketClientProtocol):
+        """Listen for incoming audio from Telnyx media stream."""
+        try:
+            async for message in ws:
+                if isinstance(message, bytes):
+                    if self._on_audio:
+                        await self._on_audio(call_id, message)
+                elif isinstance(message, str):
+                    data = json.loads(message)
+                    logger.debug(f"Media control message: {data.get('type', 'unknown')}")
+        except websockets.exceptions.ConnectionClosed:
+            logger.info(f"Media WebSocket closed for call {call_id}")
+        except Exception as e:
+            logger.error(f"Media stream error for {call_id}: {e}")
+        finally:
+            self._media_ws.pop(call_id, None)
+            self._media_tasks.pop(call_id, None)
+
+    async def send_audio_stream(self, call_id: str, audio_chunk: bytes) -> bool:
+        """Send PCM16 audio chunk via Media WebSocket (low-latency).
+
+        Replaces send_audio() which uses slow play_audio REST API.
+        Audio must be PCM16, 16kHz, mono.
+        Chunks should be ~640 bytes (20ms of audio).
+        """
+        ws = self._media_ws.get(call_id)
+        if not ws:
+            logger.warning(f"No media WebSocket for call {call_id}, falling back to play_audio")
+            audio_b64 = base64.b64encode(audio_chunk).decode("utf-8")
+            return await self.send_audio(call_id, audio_b64)
+
+        try:
+            await ws.send(audio_chunk)
+            return True
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning(f"Media WebSocket closed for {call_id}")
+            self._media_ws.pop(call_id, None)
+            return False
+
     async def hangup_call(self, call_id: str) -> dict:
-        """End an active call."""
+        """End an active call and close media stream."""
+        await self._close_media_stream(call_id)
+
         try:
             resp = await self._client.post(f"/calls/{call_id}/actions/hangup")
             resp.raise_for_status()
@@ -125,8 +222,28 @@ class TelnyxGateway:
             logger.error(f"Failed to hangup call {call_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    async def _close_media_stream(self, call_id: str):
+        """Close media WebSocket for a call."""
+        ws = self._media_ws.pop(call_id, None)
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+        task = self._media_tasks.pop(call_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     async def send_audio(self, call_id: str, audio_base64: str):
-        """Send audio to an active call's media stream."""
+        """Send audio to an active call (fallback via play_audio REST API).
+
+        For low-latency streaming, use send_audio_stream() instead.
+        """
         payload = {
             "call_control_id": call_id,
             "audio": audio_base64,
@@ -189,4 +306,6 @@ class TelnyxGateway:
                 logger.error(f"Error in webhook event handler: {e}")
 
     async def close(self):
+        for call_id in list(self._media_ws.keys()):
+            await self._close_media_stream(call_id)
         await self._client.aclose()

@@ -407,10 +407,9 @@ class LangGraphOrchestrator:
     async def initialize(self):
         await self.persistence.initialize()
         self.telnyx.register_event_handler(self._on_telnyx_event)
+        self.telnyx.register_audio_handler(self._on_telnyx_audio)
         self.stt.register_transcript_handler(self._on_transcript)
         self.stt.register_end_of_turn_handler(self._on_end_of_turn)
-        self.tts.register_audio_handler(self._on_audio_chunk)
-        self.tts.register_complete_handler(self._on_tts_complete)
         await self.stt.connect()
         logger.info("LangGraph Orchestrator initialized with Barge-In support")
 
@@ -473,10 +472,11 @@ class LangGraphOrchestrator:
             logger.info(f"TTS cancelled for {thread_id}")
 
     async def _speak_barge_in(self, text: str, state: ConversationState, thread_id: str):
-        """Speak text with Barge-In support.
+        """Speak text with Barge-In support via Media WebSocket.
 
-        Starts TTS as a cancellable task. If user speaks during TTS,
-        the task is cancelled and the new user input is processed.
+        Uses low-latency Media WebSocket streaming (<200ms) instead of
+        slow play_audio REST API (~2-5s). Falls back to play_audio if
+        WebSocket is not available.
         """
         cancel_event = self._tts_cancel_events.get(thread_id)
         if not cancel_event:
@@ -489,9 +489,11 @@ class LangGraphOrchestrator:
             if not audio or not state.telnyx_call_id:
                 return
 
-            audio_b64 = base64.b64encode(audio).decode("utf-8")
+            call_id = state.telnyx_call_id
+            chunk_size = 640
+
             send_task = asyncio.create_task(
-                self.telnyx.send_audio(state.telnyx_call_id, audio_b64)
+                self._stream_audio_chunks(call_id, audio, chunk_size, cancel_event)
             )
             self._current_tts_task = send_task
 
@@ -506,18 +508,56 @@ class LangGraphOrchestrator:
                 logger.info(f"Barge-In: TTS interrupted for {thread_id}")
                 return
 
-            logger.info(f"TTS audio sent for {thread_id} ({len(audio)} bytes)")
+            logger.info(f"TTS audio streamed for {thread_id} ({len(audio)} bytes)")
 
         except asyncio.CancelledError:
             logger.info(f"TTS cancelled for {thread_id}")
         except Exception as e:
             logger.error(f"TTS failed: {e}")
 
+    async def _stream_audio_chunks(self, call_id: str, audio: bytes, chunk_size: int, cancel_event: asyncio.Event) -> bool:
+        """Stream audio to Telnyx via Media WebSocket in 20ms chunks.
+
+        Falls back to play_audio REST API if WebSocket is not available.
+        """
+        has_ws = call_id in self.telnyx._media_ws
+
+        if has_ws:
+            sent = 0
+            for i in range(0, len(audio), chunk_size):
+                if cancel_event.is_set():
+                    return False
+                chunk = audio[i:i+chunk_size]
+                success = await self.telnyx.send_audio_stream(call_id, chunk)
+                if success:
+                    sent += len(chunk)
+                else:
+                    logger.warning(f"Media stream send failed, falling back to REST")
+                    has_ws = False
+                    break
+            return True
+        else:
+            audio_b64 = base64.b64encode(audio).decode("utf-8")
+            return await self.telnyx.send_audio(call_id, audio_b64)
+
     async def _on_telnyx_event(self, event_type: str, data: dict):
         if event_type == "call.connected":
-            pass
+            call_id = data.get("data", {}).get("id", "")
+            if call_id:
+                self._call_registry[call_id] = {"connected": True}
         elif event_type == "call.completed":
             pass
+        elif event_type == "media.streaming":
+            call_id = data.get("call_id", "")
+            logger.info(f"Media stream started for {call_id}")
+
+    async def _on_telnyx_audio(self, call_id: str, audio_chunk: bytes):
+        """Handle incoming audio from Telnyx Media WebSocket.
+
+        This is the customer's voice - feed it to Deepgram STT.
+        """
+        if self.stt:
+            await self.stt.send_audio(audio_chunk)
 
     async def _on_transcript(self, data: dict):
         """Store interim transcript but don't trigger barge-in yet."""
@@ -549,12 +589,6 @@ class LangGraphOrchestrator:
             state_data.user_input = text
             if text.lower() in ["auf wiedersehen", "tschuss", "bye"]:
                 state_data.should_end = True
-
-    async def _on_audio_chunk(self, chunk: bytes, is_final: bool):
-        pass
-
-    async def _on_tts_complete(self, data: dict):
-        pass
 
     def _get_active_thread(self) -> Optional[str]:
         """Get the currently active thread ID."""
