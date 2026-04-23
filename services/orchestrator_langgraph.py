@@ -269,21 +269,27 @@ def route_next_state(state: ConversationState, config: AppConfig) -> Literal["di
         return "summary"
 
     classifier = IntentClassifier(config)
-    import asyncio
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            intent = loop.run_until_complete(classifier.classify(
-                user_input=state.user_input,
-                current_stage=state.stage,
-                agent_response=state.agent_response,
-            ))
+            intent = asyncio.run_coroutine_threadsafe(
+                classifier.classify(
+                    user_input=state.user_input,
+                    current_stage=state.stage,
+                    agent_response=state.agent_response,
+                ),
+                loop,
+            ).result(timeout=10)
         else:
-            intent = asyncio.run(classifier.classify(
-                user_input=state.user_input,
-                current_stage=state.stage,
-                agent_response=state.agent_response,
-            ))
+            new_loop = asyncio.new_event_loop()
+            try:
+                intent = new_loop.run_until_complete(classifier.classify(
+                    user_input=state.user_input,
+                    current_stage=state.stage,
+                    agent_response=state.agent_response,
+                ))
+            finally:
+                new_loop.close()
     except Exception as e:
         logger.warning(f"Intent classifier failed, falling back to rules: {e}")
         return _fallback_routing(state)
