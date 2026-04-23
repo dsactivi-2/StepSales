@@ -2,6 +2,9 @@
 Deepgram Speech-to-Text Service
 Realtime transcription with German language support, end-of-turn detection,
 and interim results for low-latency voice agents.
+
+Updated: Uses Deepgram Listen V2 API with proper eot_threshold/eot_timeout_ms
+per SDK v5/v6 documentation.
 """
 
 import asyncio
@@ -34,17 +37,17 @@ class DeepgramSTT:
         self._on_eot = handler
 
     async def connect(self):
-        """Connect to Deepgram realtime websocket."""
+        """Connect to Deepgram Listen V2 realtime websocket."""
         params = {
             "model": self.config.deepgram.model,
             "language": self.config.deepgram.language,
             "smart_format": str(self.config.deepgram.smart_format).lower(),
             "interim_results": str(self.config.deepgram.interim_results).lower(),
-            "utterance_end_ms": str(self.config.deepgram.utterance_end_ms),
-            "endpointing": str(self.config.deepgram.endpointing_ms),
             "sample_rate": str(self.config.deepgram.sample_rate),
             "channels": str(self.config.deepgram.channels),
             "encoding": self.config.deepgram.encoding,
+            "eot_threshold": str(self.config.deepgram.eot_threshold),
+            "eot_timeout_ms": str(self.config.deepgram.eot_timeout_ms),
         }
 
         query = "&".join(f"{k}={v}" for k, v in params.items())
@@ -54,7 +57,7 @@ class DeepgramSTT:
             "Authorization": f"Token {self.config.deepgram.api_key}",
         }
 
-        logger.info(f"Connecting to Deepgram STT: {self.config.deepgram.model} (de)")
+        logger.info(f"Connecting to Deepgram Listen V2: {self.config.deepgram.model} (de, eot_threshold={self.config.deepgram.eot_threshold})")
         self._ws = await websockets.connect(
             url,
             additional_headers=headers,
@@ -106,12 +109,12 @@ class DeepgramSTT:
                             "text": transcript,
                             "is_final": is_final,
                             "confidence": confidence,
-                            "speech_final": speech_final,
+                            "speech_final": speech_started,
                             "start": start,
                             "duration": duration,
                         })
 
-                if speech_final and self._on_eot:
+                if speech_started and self._on_eot:
                     await self._on_eot({
                         "text": transcript,
                         "confidence": confidence,

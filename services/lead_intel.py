@@ -31,7 +31,7 @@ class LeadIntelService:
     async def search_stepstone(self, query: str, location: str = "", limit: int = 20) -> List[dict]:
         """Search Stepstone for companies with open positions."""
         try:
-            url = "http://localhost:8000/search"
+            url = "http://stepstone-mcp:8000/search"
             params = {"q": query}
             if location:
                 params["location"] = location

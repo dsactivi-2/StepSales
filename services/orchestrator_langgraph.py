@@ -126,7 +126,6 @@ def _build_system_prompt(state: ConversationState, config: AppConfig) -> str:
         contact_str = ", ".join(f"{k}: {v}" for k, v in state.contact_info.items())
         prompt += f"\n\nKONTAKTDATEN: {contact_str}"
 
-    prompt += f"\n\nAKTUELLE PHASE: {state.stage}"
     prompt += f"\nTALK COUNT: {state.turn_count}/{state.max_turns}"
 
     return prompt
@@ -264,7 +263,6 @@ def route_next_state(state: ConversationState) -> Literal["discovery", "qualify"
         return "summary"
 
     text = state.user_input.lower()
-    agent_resp = state.agent_response.lower()
 
     if any(w in text for w in ["auf wiedersehen", "tschuss", "bye", "ende"]):
         return "summary"

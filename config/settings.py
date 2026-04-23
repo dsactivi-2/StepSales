@@ -29,8 +29,8 @@ class DeepgramConfig:
     language: str = "de"
     smart_format: bool = True
     interim_results: bool = True
-    utterance_end_ms: int = 1000
-    endpointing_ms: int = 300
+    eot_threshold: float = 0.5
+    eot_timeout_ms: int = 1500
     sample_rate: int = 16000
     encoding: str = "linear16"
     channels: int = 1
@@ -53,7 +53,7 @@ class ElevenLabsConfig:
 @dataclass
 class OpenAIConfig:
     api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    model: str = "gpt-4.1-2025-04-14"
+    model: str = "gpt-4o"
     temperature: float = 0.8
     max_tokens: int = 512
 

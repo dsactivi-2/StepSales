@@ -15,6 +15,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
 from config.settings import AppConfig
 from services.telnyx_gateway import TelnyxGateway
 from services.deepgram_stt import DeepgramSTT
@@ -37,6 +41,55 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("stepsales.main")
+
+app = FastAPI(title="Stepsales API", version="1.0.0")
+_system = None
+
+class CallRequest(BaseModel):
+    phone: str
+    lead_id: str | None = None
+
+class CampaignRequest(BaseModel):
+    phones: list[str]
+    lead_id: str | None = None
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+@app.post("/call")
+async def trigger_call(req: CallRequest):
+    if not _system or not _system.orchestrator:
+        raise HTTPException(503, "System not initialized")
+    try:
+        result = await _system.orchestrator.start_outbound_call(
+            phone_number=req.phone,
+            lead_id=req.lead_id,
+        )
+        return {"success": True, "call": str(result)}
+    except Exception as e:
+        logger.error(f"Call trigger failed: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/leads")
+async def get_leads():
+    if not _system or not _system.lead_intel:
+        raise HTTPException(503, "System not initialized")
+    queue = await _system.lead_intel.generate_lead_queue()
+    return {"leads": queue[:20], "total": len(queue)}
+
+@app.post("/invoice")
+async def trigger_invoice(lead_id: str, email: str, name: str, company: str):
+    if not _system or not _system.orchestrator:
+        raise HTTPException(503, "System not initialized")
+    result = await _system.orchestrator.create_invoice_for_lead(
+        lead_id=lead_id,
+        customer_email=email,
+        customer_name=name,
+        customer_company=company,
+        items=[{"description": "Multiposting StepStone + Indeed", "amount_cents": 649000, "currency": "eur"}],
+    )
+    return result
 
 
 class StepsalesSystem:
@@ -142,7 +195,9 @@ class StepsalesSystem:
 
 
 async def main():
+    global _system
     system = StepsalesSystem()
+    _system = system
 
     def signal_handler(sig, frame):
         logger.info("Received shutdown signal")
@@ -190,12 +245,15 @@ async def main():
             else:
                 print("Usage: python main.py [leads|call <phone>|invoice]")
         else:
-            print("Stepsales Production System initialized.")
-            print("Commands: leads, call <phone>, invoice")
-            print("Press Ctrl+C to stop.")
-
-            while system._running:
-                await asyncio.sleep(1)
+            logger.info("Starting REST API server on port 8010")
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=8010,
+                log_level="info",
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
 
     except KeyboardInterrupt:
         pass

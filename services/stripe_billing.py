@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 import httpx
+import stripe
 
 from config.settings import AppConfig
 
@@ -179,21 +180,22 @@ class StripeBilling:
         return resp.json()
 
     def verify_webhook_signature(self, payload: str, sig_header: str) -> bool:
-        """Verify Stripe webhook signature."""
-        import hmac
-        import hashlib
+        """Verify Stripe webhook signature using Stripe-Signature header format.
+
+        Stripe signature format: t=timestamp,v1=signature
+        Uses HMAC-SHA256 with timestamp to prevent replay attacks.
+        """
+        import stripe as stripe_lib
 
         if not self.config.stripe.webhook_secret:
             return True
 
         try:
-            signed = hmac.new(
-                self.config.stripe.webhook_secret.encode("utf-8"),
-                payload.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-            return hmac.compare_digest(signed, sig_header)
-        except Exception:
+            stripe_lib.Webhook.construct_event(
+                payload, sig_header, self.config.stripe.webhook_secret
+            )
+            return True
+        except (ValueError, stripe_lib.error.SignatureVerificationError):
             return False
 
     async def handle_webhook(self, event_data: dict) -> dict:
