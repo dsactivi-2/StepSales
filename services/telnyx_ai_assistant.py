@@ -112,6 +112,15 @@ class TelnyxAIAssistant:
                 "ai_assistant.gather_result",
             ],
             "timeout": 60,
+            "commands": [
+                {
+                    "command": "ai_assistant_start",
+                    "ai_assistant_request": {
+                        "model": "openai/gpt-4o",
+                        "prompt": SALES_ASSISTANT_PROMPT,
+                    },
+                }
+            ],
         }
 
         logger.info(f"Initiating AI call to {to_number} from {from_number}")
