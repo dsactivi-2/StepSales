@@ -36,6 +36,7 @@ from services.telnyx_gateway import TelnyxGateway
 from services.stripe_billing import StripeBilling
 from services.persistence import PersistenceService
 from services.lead_intel import LeadIntelService
+from services.intent_classifier import IntentClassifier
 
 logger = logging.getLogger("stepsales.orchestrator_langgraph")
 
@@ -258,66 +259,62 @@ def _run_llm_turn(state: ConversationState, config: AppConfig, stage: str) -> di
     }
 
 
-def route_next_state(state: ConversationState) -> Literal["discovery", "qualify", "offer", "objection", "close", "followup", "summary", "end"]:
-    """LangGraph conditional edge router."""
-
+def route_next_state(state: ConversationState, config: AppConfig) -> Literal["discovery", "qualify", "offer", "objection", "close", "followup", "summary", "end"]:
+    """LLM-based intent classification for routing."""
     if state.turn_count >= state.max_turns:
         return "summary"
-
     if state.should_end:
         return "end"
-
     if state.error:
         return "summary"
 
-    text = state.user_input.lower()
+    classifier = IntentClassifier(config)
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            intent = loop.run_until_complete(classifier.classify(
+                user_input=state.user_input,
+                current_stage=state.stage,
+                agent_response=state.agent_response,
+            ))
+        else:
+            intent = asyncio.run(classifier.classify(
+                user_input=state.user_input,
+                current_stage=state.stage,
+                agent_response=state.agent_response,
+            ))
+    except Exception as e:
+        logger.warning(f"Intent classifier failed, falling back to rules: {e}")
+        return _fallback_routing(state)
 
+    next_stage = classifier.intent_to_stage(intent)
+    if next_stage and next_stage in ["discovery", "qualify", "offer", "objection", "close", "followup", "summary"]:
+        return next_stage
+    if intent.confidence < 0.3:
+        return _fallback_routing(state)
+    return state.stage
+
+
+def _fallback_routing(state: ConversationState) -> str:
+    """Fallback keyword routing when LLM classifier fails."""
+    text = state.user_input.lower()
     if any(w in text for w in ["auf wiedersehen", "tschuss", "bye", "ende"]):
         return "summary"
-
-    if any(w in text for w in ["kein bedarf", "kein interesse", "nicht mehr anrufen", "stop"]):
+    if any(w in text for w in ["kein bedarf", "kein interesse"]):
         return "followup"
-
-    if any(w in text for w in ["zu teuer", "preis", "kosten", "budget", "leisten"]):
+    if any(w in text for w in ["zu teuer", "preis", "kosten"]):
         return "objection"
-
-    if any(w in text for w in ["ja", "gerne", "okay", "einverstanden", "machen wir", "deal", "passt"]):
-        if state.stage in ["offer", "qualify", "objection"]:
-            return "close"
-        return "qualify"
-
-    if any(w in text for w in ["woche", "monat", "sofort", "dringend", "brauchen"]):
-        return "offer"
-
+    if any(w in text for w in ["ja", "gerne", "okay", "deal"]):
+        return "close" if state.stage in ["offer", "objection"] else "qualify"
     if state.stage == "greet":
         return "discovery"
-
-    if state.stage == "discovery":
-        if any(w in text for w in ["budget", "zahlen", "kosten", "preis"]):
-            return "offer"
-        return "qualify"
-
-    if state.stage == "qualify":
-        if state.qualification_score >= 60:
-            return "offer"
-        return "qualify"
-
+    if state.stage in ["discovery", "qualify"]:
+        return "qualify" if state.stage == "discovery" else "offer"
     if state.stage == "offer":
-        if any(w in text for w in ["einwand", "aber", "problem", "schwierig"]):
-            return "objection"
-        return "close"
-
-    if state.stage == "objection":
-        if any(w in text for w in ["okay", "einverstanden", "gut", "passt"]):
-            return "close"
-        return "objection"
-
+        return "objection" if any(w in text for w in ["aber", "problem"]) else "close"
     if state.stage == "close":
         return "summary"
-
-    if state.stage == "followup":
-        return "summary"
-
     return state.stage
 
 
@@ -328,45 +325,43 @@ def build_conversation_graph(config: AppConfig):
 
     workflow = StateGraph(ConversationState)
 
-    workflow.add_node("greet", lambda s: node_greet(s, config))
-    workflow.add_node("discovery", lambda s: node_discovery(s, config))
-    workflow.add_node("qualify", lambda s: node_qualify(s, config))
-    workflow.add_node("offer", lambda s: node_offer(s, config))
-    workflow.add_node("objection", lambda s: node_objection(s, config))
-    workflow.add_node("close", lambda s: node_close(s, config))
-    workflow.add_node("followup", lambda s: node_followup(s, config))
-    workflow.add_node("summary", lambda s: node_summary(s, config))
+    def greet_node(s): return node_greet(s, config)
+    def discovery_node(s): return node_discovery(s, config)
+    def qualify_node(s): return node_qualify(s, config)
+    def offer_node(s): return node_offer(s, config)
+    def objection_node(s): return node_objection(s, config)
+    def close_node(s): return node_close(s, config)
+    def followup_node(s): return node_followup(s, config)
+    def summary_node(s): return node_summary(s, config)
+
+    def route(s): return route_next_state(s, config)
+
+    workflow.add_node("greet", greet_node)
+    workflow.add_node("discovery", discovery_node)
+    workflow.add_node("qualify", qualify_node)
+    workflow.add_node("offer", offer_node)
+    workflow.add_node("objection", objection_node)
+    workflow.add_node("close", close_node)
+    workflow.add_node("followup", followup_node)
+    workflow.add_node("summary", summary_node)
 
     workflow.set_entry_point("greet")
 
-    workflow.add_conditional_edges(
-        "greet", route_next_state,
-        {
-            "discovery": "discovery",
-            "qualify": "qualify",
-            "offer": "offer",
-            "objection": "objection",
-            "close": "close",
-            "followup": "followup",
-            "summary": "summary",
-            "end": END,
-        }
-    )
+    edges = {
+        "discovery": "discovery",
+        "qualify": "qualify",
+        "offer": "offer",
+        "objection": "objection",
+        "close": "close",
+        "followup": "followup",
+        "summary": "summary",
+        "end": END,
+    }
+
+    workflow.add_conditional_edges("greet", route, edges)
 
     for node in ["discovery", "qualify", "offer", "objection", "close", "followup"]:
-        workflow.add_conditional_edges(
-            node, route_next_state,
-            {
-                "discovery": "discovery",
-                "qualify": "qualify",
-                "offer": "offer",
-                "objection": "objection",
-                "close": "close",
-                "followup": "followup",
-                "summary": "summary",
-                "end": END,
-            }
-        )
+        workflow.add_conditional_edges(node, route, edges)
 
     workflow.add_edge("summary", END)
 

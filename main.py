@@ -27,6 +27,8 @@ from services.stripe_billing import StripeBilling
 from services.persistence import PersistenceService
 from services.lead_intel import LeadIntelService
 from services.orchestrator_langgraph import LangGraphOrchestrator
+from services.fulfillment import FulfillmentService, JobAdSubmission
+from services.cadence import OutboundCadence, CadenceSequence
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -52,6 +54,31 @@ class CallRequest(BaseModel):
 class CampaignRequest(BaseModel):
     phones: list[str]
     lead_id: str | None = None
+
+class JobAdRequest(BaseModel):
+    title: str
+    company: str
+    description: str
+    location: str
+    employment_type: str = "full_time"
+    salary_range: str = ""
+    requirements: list[str] = []
+    benefits: list[str] = []
+    contact_email: str = ""
+    contact_phone: str = ""
+    duration_days: int = 30
+
+class CadenceRequest(BaseModel):
+    lead_id: str
+    phone: str
+    company: str
+    max_call_attempts: int = 3
+    email_fallback: bool = True
+
+class IntentRequest(BaseModel):
+    user_input: str
+    current_stage: str = "discovery"
+    agent_response: str = ""
 
 @app.get("/health")
 async def health():
@@ -91,6 +118,93 @@ async def trigger_invoice(lead_id: str, email: str, name: str, company: str):
     )
     return result
 
+@app.post("/intent")
+async def classify_intent(req: IntentRequest):
+    if not _system or not _system.orchestrator:
+        raise HTTPException(503, "System not initialized")
+    from services.intent_classifier import IntentClassifier
+    classifier = IntentClassifier(_system.config)
+    result = await classifier.classify(
+        user_input=req.user_input,
+        current_stage=req.current_stage,
+        agent_response=req.agent_response,
+    )
+    next_stage = classifier.intent_to_stage(result)
+    return {
+        "intent": result.intent.value,
+        "confidence": result.confidence,
+        "keywords": result.keywords,
+        "needs_followup": result.needs_followup,
+        "suggested_stage": next_stage,
+    }
+
+@app.post("/fulfill")
+async def submit_job_ad(req: JobAdRequest):
+    if not _system or not _system.fulfillment:
+        raise HTTPException(503, "System not initialized")
+    ad = JobAdSubmission({
+        "title": req.title,
+        "company": req.company,
+        "description": req.description,
+        "location": req.location,
+        "employment_type": req.employment_type,
+        "salary_range": req.salary_range,
+        "requirements": req.requirements,
+        "benefits": req.benefits,
+        "contact_email": req.contact_email,
+        "contact_phone": req.contact_phone,
+        "duration_days": req.duration_days,
+    })
+    validation = await _system.fulfillment.validate_ad(ad)
+    return {"validation": validation, "ad": {"title": ad.title, "company": ad.company}}
+
+@app.post("/fulfill/multiposting")
+async def submit_multiposting(req: JobAdRequest):
+    if not _system or not _system.fulfillment:
+        raise HTTPException(503, "System not initialized")
+    ad = JobAdSubmission({
+        "title": req.title, "company": req.company, "description": req.description,
+        "location": req.location, "employment_type": req.employment_type,
+        "salary_range": req.salary_range, "requirements": req.requirements,
+        "benefits": req.benefits, "contact_email": req.contact_email,
+        "contact_phone": req.contact_phone, "duration_days": req.duration_days,
+    })
+    return await _system.fulfillment.submit_multiposting(ad)
+
+@app.post("/cadence")
+async def create_cadence(req: CadenceRequest):
+    if not _system or not _system.cadence:
+        raise HTTPException(503, "System not initialized")
+    seq = _system.cadence.create_sequence(
+        lead_id=req.lead_id,
+        phone=req.phone,
+        company=req.company,
+        max_call_attempts=req.max_call_attempts,
+        email_fallback=req.email_fallback,
+    )
+    return {"lead_id": req.lead_id, "steps": len(seq.steps), "sequence": "created"}
+
+@app.get("/cadence/status")
+async def get_cadence_status():
+    if not _system or not _system.cadence:
+        raise HTTPException(503, "System not initialized")
+    return _system.cadence.get_queue_status()
+
+@app.get("/status")
+async def full_status():
+    return {
+        "healthy": True,
+        "services": {
+            "orchestrator": _system.orchestrator is not None,
+            "lead_intel": _system.lead_intel is not None,
+            "billing": _system.billing is not None,
+            "fulfillment": _system.fulfillment is not None,
+            "cadence": _system.cadence is not None,
+        },
+        "cadence": _system.cadence.get_queue_status() if _system.cadence else {},
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 class StepsalesSystem:
     """Main system coordinator for all Stepsales services."""
@@ -101,6 +215,8 @@ class StepsalesSystem:
         self.lead_intel = None
         self.billing = None
         self.telnyx = None
+        self.fulfillment = None
+        self.cadence = None
         self._running = False
 
     async def initialize(self):
@@ -120,6 +236,8 @@ class StepsalesSystem:
 
         self.lead_intel = LeadIntelService(self.config)
         self.billing = StripeBilling(self.config)
+        self.fulfillment = FulfillmentService(self.config)
+        self.cadence = OutboundCadence(self.config, self.orchestrator)
 
         logger.info("All services initialized successfully")
         self._running = True
@@ -190,6 +308,10 @@ class StepsalesSystem:
             await self.lead_intel.close()
         if self.billing:
             await self.billing.close()
+        if self.fulfillment:
+            await self.fulfillment.close()
+        if self.cadence:
+            self.cadence.stop_scheduler()
 
         logger.info("All services shut down")
 
