@@ -73,30 +73,26 @@ class TelnyxGateway:
         metadata: dict = None,
         media_websocket_url: str = None,
     ) -> dict:
-        """Initiate an outbound call via Telnyx Voice API with optional media streaming."""
+        """Initiate an outbound call via Telnyx Call Control API."""
         from_number = from_number or self.config.telnyx.from_number
-        connection_id = connection_id or self.config.telnyx.connection_id
+        # Use Call Control App ID, not SIP connection ID
+        connection_id = connection_id or self.config.telnyx.call_control_app_id
 
         payload = {
+            "connection_id": connection_id,
             "to": to_number,
             "from": from_number,
-            "connection_id": connection_id,
             "webhook_event_type": ["call.initiated", "call.ringing", "call.connected", "call.completed", "call.failed"],
-            "webhook_url": webhook_url,
-            "webhook_failover_url": webhook_url,
             "timeout": 60,
         }
 
-        if media_websocket_url:
-            payload["media_streaming_start"] = {
-                "url": media_websocket_url,
-                "audio_format": "PCM16",
-                "sample_rate": 16000,
-                "channels": 1,
-            }
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
+        elif self.config.telnyx.webhook_url:
+            payload["webhook_url"] = self.config.telnyx.webhook_url
 
-        if metadata:
-            payload["messaging_profile_id"] = metadata.get("messaging_profile_id")
+        if self.config.telnyx.webhook_failback_url:
+            payload["webhook_event_failover_url"] = self.config.telnyx.webhook_failback_url
 
         logger.info(f"Initiating outbound call to {to_number} from {from_number}")
         if media_websocket_url:

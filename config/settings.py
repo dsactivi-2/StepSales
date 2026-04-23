@@ -17,7 +17,10 @@ load_dotenv()
 class TelnyxConfig:
     api_key: str = field(default_factory=lambda: os.getenv("TELNYX_API_KEY", ""))
     connection_id: str = field(default_factory=lambda: os.getenv("TELNYX_CONNECTION_ID", ""))
+    call_control_app_id: str = field(default_factory=lambda: os.getenv("TELNYX_CALL_CONTROL_APP_ID", ""))
     from_number: str = field(default_factory=lambda: os.getenv("TELNYX_FROM_NUMBER", ""))
+    webhook_url: str = field(default_factory=lambda: os.getenv("TELNYX_WEBHOOK_URL", ""))
+    webhook_failback_url: str = field(default_factory=lambda: os.getenv("TELNYX_WEBHOOK_FAILBACK_URL", ""))
     webhook_secret: str = field(default_factory=lambda: os.getenv("TELNYX_WEBHOOK_SECRET", ""))
     api_base: str = "https://api.telnyx.com/v2"
 
