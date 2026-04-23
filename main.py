@@ -31,6 +31,8 @@ from services.fulfillment import FulfillmentService, JobAdSubmission
 from services.cadence import OutboundCadence, CadenceSequence
 from services.knowledgebase import KnowledgebaseService
 from services.agent_coach import AgentCoachService
+from services.sla_escalation import SLAEscalationService, SLAPolicy
+from services.analytics import AnalyticsService
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -95,6 +97,11 @@ class KBSearchRequest(BaseModel):
     query: str
     top_k: int = 3
     category: str = ""
+
+class SLARequest(BaseModel):
+    policy: str
+    entity_id: str
+    deadline_hours: float = 24
 
 @app.get("/health")
 async def health():
@@ -247,6 +254,69 @@ async def kb_context(stage: str, user_input: str = ""):
     context = await _system.knowledgebase.get_context_for_stage(stage, user_input)
     return {"stage": stage, "context": context}
 
+@app.post("/sla/create")
+async def sla_create(req: SLARequest):
+    if not _system or not _system.sla:
+        raise HTTPException(503, "System not initialized")
+    policy_map = {p.value: p for p in SLAPolicy}
+    policy = policy_map.get(req.policy)
+    if not policy:
+        raise HTTPException(400, f"Unknown policy: {req.policy}. Valid: {list(policy_map.keys())}")
+    event = _system.sla.create_event(policy, req.entity_id, req.deadline_hours)
+    return event.to_dict()
+
+@app.get("/sla/active")
+async def sla_active(severity: str = ""):
+    if not _system or not _system.sla:
+        raise HTTPException(503, "System not initialized")
+    events = _system.sla.get_active_events()
+    return {"events": [e.to_dict() for e in events], "stats": _system.sla.get_stats()}
+
+@app.get("/sla/overdue")
+async def sla_overdue():
+    if not _system or not _system.sla:
+        raise HTTPException(503, "System not initialized")
+    events = _system.sla.get_overdue_events()
+    return {"events": [e.to_dict() for e in events], "count": len(events)}
+
+@app.post("/sla/resolve/{event_id}")
+async def sla_resolve(event_id: str, note: str = ""):
+    if not _system or not _system.sla:
+        raise HTTPException(503, "System not initialized")
+    success = _system.sla.resolve_event(event_id, note)
+    return {"success": success, "event_id": event_id}
+
+@app.get("/analytics")
+async def get_analytics():
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    return _system.analytics.get_summary()
+
+@app.get("/analytics/funnel")
+async def get_funnel():
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    return _system.analytics.get_funnel()
+
+@app.get("/analytics/forecast")
+async def get_forecast():
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    return _system.analytics.get_forecast()
+
+@app.get("/analytics/objections")
+async def get_objections():
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    return _system.analytics.get_objection_analysis()
+
+@app.post("/analytics/record-call")
+async def record_call(duration: float, stage: str, deal_value: float = 0):
+    if not _system or not _system.analytics:
+        raise HTTPException(503, "System not initialized")
+    _system.analytics.record_call(duration, stage, deal_value)
+    return {"recorded": True}
+
 @app.get("/status")
 async def full_status():
     return {
@@ -280,6 +350,8 @@ class StepsalesSystem:
         self.cadence = None
         self.knowledgebase = None
         self.coach = None
+        self.sla = None
+        self.analytics = None
         self._running = False
 
     async def initialize(self):
@@ -304,6 +376,10 @@ class StepsalesSystem:
         self.knowledgebase = KnowledgebaseService(self.config)
         await self.knowledgebase.initialize()
         self.coach = AgentCoachService(self.config)
+        self.sla = SLAEscalationService(self.config)
+        await self.sla.initialize()
+        self.analytics = AnalyticsService(self.config)
+        await self.analytics.initialize()
 
         logger.info("All services initialized successfully")
         self._running = True
@@ -380,6 +456,8 @@ class StepsalesSystem:
             self.cadence.stop_scheduler()
         if self.knowledgebase:
             await self.knowledgebase.close()
+        if self.sla:
+            self.sla.stop_monitor()
 
         logger.info("All services shut down")
 
