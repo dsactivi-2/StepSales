@@ -146,9 +146,6 @@ class TelnyxAIAssistant:
 
             await self._emit_event("call.initiated", self._call_registry[call_control_id])
 
-            # Auto-start AI Assistant immediately (Telnyx will start it when call connects)
-            asyncio.ensure_future(self._auto_start_ai_assistant(call_control_id, lead_id, delay=2))
-
             return {
                 "success": True,
                 "call_control_id": call_control_id,
