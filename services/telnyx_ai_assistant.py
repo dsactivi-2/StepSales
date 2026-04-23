@@ -155,12 +155,33 @@ class TelnyxAIAssistant:
         """Wait for call to connect, then start AI Assistant."""
         try:
             logger.info(f"Background task started for {call_control_id} (delay={delay}s)")
-            # Wait for the call to start ringing/connecting
-            if delay > 0:
-                await asyncio.sleep(delay)
 
-            # Try to start AI Assistant with retries
-            for attempt in range(3):
+            # Try to start AI Assistant with retries over 30 seconds
+            for attempt in range(6):
+                if call_control_id not in self._call_registry:
+                    logger.warning(f"Call {call_control_id} no longer in registry")
+                    return
+
+                logger.info(f"Starting AI Assistant for {call_control_id} (attempt {attempt + 1})")
+                result = await self.start_ai_assistant(call_control_id)
+
+                if result.get("success"):
+                    logger.info(f"AI Assistant started for {call_control_id}")
+                    return
+
+                error = result.get("error", "")
+                if "already ended" in error.lower():
+                    logger.warning(f"Call ended before AI could start: {call_control_id}")
+                    return
+
+                # Wait before retry (increase delay each attempt)
+                wait_time = 5 + (attempt * 3)
+                logger.info(f"Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+            logger.error(f"Failed to start AI Assistant after 6 attempts: {call_control_id}")
+        except Exception as e:
+            logger.error(f"Background AI start failed for {call_control_id}: {e}", exc_info=True)
                 if call_control_id not in self._call_registry:
                     logger.warning(f"Call {call_control_id} no longer in registry")
                     return
