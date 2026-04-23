@@ -93,7 +93,8 @@ class TelnyxAIAssistant:
 
         Flow:
         1. Create call via Telnyx Call Control API
-        2. When call connects, AI Assistant starts automatically
+        2. Wait briefly for call to connect
+        3. Start AI Assistant automatically
         """
         from_number = from_number or self.config.telnyx.from_number
         connection_id = self.config.telnyx.call_control_app_id
@@ -136,6 +137,9 @@ class TelnyxAIAssistant:
 
             await self._emit_event("call.initiated", self._call_registry[call_control_id])
 
+            # Auto-start AI Assistant after brief delay (call needs time to connect)
+            asyncio.create_task(self._auto_start_ai_assistant(call_control_id, lead_id))
+
             return {
                 "success": True,
                 "call_control_id": call_control_id,
@@ -146,6 +150,25 @@ class TelnyxAIAssistant:
         except httpx.HTTPError as e:
             logger.error(f"Failed to initiate AI call to {to_number}: {e}")
             return {"success": False, "error": str(e), "to": to_number}
+
+    async def _auto_start_ai_assistant(self, call_control_id: str, lead_id: str = None):
+        """Wait for call to connect, then start AI Assistant."""
+        # Wait 10 seconds for the call to ring and connect
+        await asyncio.sleep(10)
+
+        # Check if call is still active
+        if call_control_id in self._call_registry:
+            logger.info(f"Auto-starting AI Assistant for {call_control_id}")
+            result = await self.start_ai_assistant(call_control_id)
+            if result.get("success"):
+                logger.info(f"AI Assistant started for {call_control_id}")
+            else:
+                logger.warning(f"Failed to auto-start AI Assistant: {result.get('error')}")
+                # Retry once after 5 more seconds
+                await asyncio.sleep(5)
+                result = await self.start_ai_assistant(call_control_id)
+                if result.get("success"):
+                    logger.info(f"AI Assistant started on retry for {call_control_id}")
 
     async def start_ai_assistant(self, call_control_id: str, prompt: str = None) -> dict:
         """Start Telnyx native AI Assistant on an active call.
