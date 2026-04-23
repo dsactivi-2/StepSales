@@ -1,0 +1,19 @@
+{
+  "mcp": {
+    "context7": {
+      "type": "local",
+      "command": ["npx", "-y", "@upstash/context7-mcp", "--api-key", "ctx7sk-fae20742-2bd7-454f-ba23-a5e72828f5ef"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "permission": {
+    "bash": "allow",
+    "edit": "allow",
+    "read": "allow",
+    "context7_*": "allow"
+  },
+  "skills": {
+    "paths": ["./.kilo/skills"]
+  }
+}
