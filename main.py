@@ -35,6 +35,7 @@ from services.agent_coach import AgentCoachService
 from services.sla_escalation import SLAEscalationService, SLAPolicy
 from services.analytics import AnalyticsService
 from services.webhooks import WebhookRouter
+from services.audit_monitoring import AuditAndMonitoringService, AuditCategory, AuditLevel
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -105,6 +106,12 @@ class SLARequest(BaseModel):
     policy: str
     entity_id: str
     deadline_hours: float = 24
+
+class AuditQueryRequest(BaseModel):
+    category: str = ""
+    level: str = ""
+    actor: str = ""
+    limit: int = 100
 
 @app.get("/health")
 async def health():
@@ -419,6 +426,44 @@ async def export_analytics():
         raise HTTPException(503, "System not initialized")
     return _system.analytics.get_summary()
 
+@app.get("/audit/log")
+async def audit_log(category: str = "", level: str = "", actor: str = "", limit: int = 100):
+    if not _system or not _system.audit:
+        raise HTTPException(503, "System not initialized")
+    return _system.audit.get_audit_log(category or None, level or None, actor or None, limit)
+
+@app.get("/audit/security")
+async def audit_security():
+    if not _system or not _system.audit:
+        raise HTTPException(503, "System not initialized")
+    scan = await _system.audit.run_security_scan()
+    return scan.to_dict()
+
+@app.get("/audit/compliance")
+async def audit_compliance():
+    if not _system or not _system.audit:
+        raise HTTPException(503, "System not initialized")
+    return await _system.audit.run_compliance_check()
+
+@app.get("/audit/summary")
+async def audit_summary():
+    if not _system or not _system.audit:
+        raise HTTPException(503, "System not initialized")
+    return _system.audit.get_summary()
+
+@app.post("/audit/log-entry")
+async def audit_log_entry(req: AuditQueryRequest):
+    if not _system or not _system.audit:
+        raise HTTPException(503, "System not initialized")
+    await _system.audit.log(
+        category=AuditCategory(req.category) if req.category else AuditCategory.SYSTEM,
+        action="manual_entry",
+        actor=req.actor or "api",
+        details={"category": req.category, "level": req.level},
+        level=AuditLevel(req.level) if req.level else AuditLevel.INFO,
+    )
+    return {"logged": True}
+
 @app.get("/status")
 async def full_status():
     return {
@@ -455,6 +500,7 @@ class StepsalesSystem:
         self.sla = None
         self.analytics = None
         self.webhooks = None
+        self.audit = None
         self._running = False
 
     async def initialize(self):
@@ -484,6 +530,8 @@ class StepsalesSystem:
         self.analytics = AnalyticsService(self.config)
         await self.analytics.initialize()
         self.webhooks = WebhookRouter(self.config)
+        self.audit = AuditAndMonitoringService(self.config)
+        await self.audit.initialize()
 
         logger.info("All services initialized successfully")
         self._running = True
