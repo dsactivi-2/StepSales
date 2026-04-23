@@ -22,8 +22,12 @@
 - Close highest-impact known gaps and log each decision/event in `decisions.jsonl`.
 
 ## Last Updated
-- 2026-04-23T08:06:14Z
-- Updated by: Kilo memory MVP bootstrap
+- 2026-04-23T15:55:52+02:00
+- Updated by: Kilo memory MVP bootstrap + LangGraph migration
+
+## Session Handover
+- Full handover saved to: `.kilo/memory/handover-2026-04-23.md`
+- Next session: Read handover file for complete project state
 
 ## Safety Rules
 - Never store raw secrets, API keys, tokens, passwords, or private customer data in memory files.
