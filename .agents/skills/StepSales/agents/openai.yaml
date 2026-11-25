@@ -1,0 +1,6 @@
+interface:
+  display_name: "StepSales"
+  short_description: "Repo-specific patterns and workflows for StepSales"
+  default_prompt: "Use the StepSales repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
